@@ -34,12 +34,19 @@ pub(crate) fn spawn(
                 let now = crate::db::now_ms();
                 let stats = db.rollup(now, ROLLUP_LAG_MS, BATCH_NODES)?;
                 let pruned = db.prune(now, raw_ms, m1_ms, m15_ms)?;
-                Ok::<_, crate::db::DbError>((stats, pruned))
+                let sessions = db.prune_sessions(now)?;
+                Ok::<_, crate::db::DbError>((stats, pruned, sessions))
             })
             .await;
             match round {
-                Ok(Ok((stats, pruned))) => {
-                    tracing::debug!(m1 = stats.m1, m15 = stats.m15, pruned, "rollup 完成");
+                Ok(Ok((stats, pruned, sessions))) => {
+                    tracing::debug!(
+                        m1 = stats.m1,
+                        m15 = stats.m15,
+                        pruned,
+                        sessions,
+                        "rollup 完成"
+                    );
                 }
                 Ok(Err(e)) => tracing::error!(error = %e, "rollup 失败"),
                 Err(e) => tracing::error!(error = %e, "rollup 任务异常"),

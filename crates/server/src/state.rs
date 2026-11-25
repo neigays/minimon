@@ -31,6 +31,7 @@ pub struct AppState {
     pub(crate) cfg: Arc<ServerConfig>,
     shutdown: Arc<watch::Sender<bool>>,
     sessions: Arc<SessionTracker>,
+    pub(crate) login_limiter: Arc<crate::auth::LoginLimiter>,
 }
 
 /// 活跃 WS 会话计数。upgrade 后的连接不受 axum 优雅停机管理，需自行等待。
@@ -67,6 +68,7 @@ impl AppState {
             cfg: Arc::new(cfg),
             shutdown: Arc::new(watch::channel(false).0),
             sessions: Arc::default(),
+            login_limiter: Arc::default(),
         };
         Ok((state, join))
     }

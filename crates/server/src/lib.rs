@@ -1,5 +1,8 @@
+mod auth;
+mod auth_api;
 pub mod config;
 pub mod db;
+mod error;
 mod ingest;
 mod live;
 mod rollup;
@@ -13,6 +16,7 @@ use axum::routing::get;
 use ingest::IngestJoin;
 use state::AppState;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,7 +25,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agent/ws", get(ws_agent::handler))
         .route("/api/nodes", get(live::nodes))
         .route("/api/live", get(live::ws))
+        .merge(auth_api::routes())
         .fallback(web::fallback)
+        .layer(axum::middleware::from_fn(auth::require_json))
         .with_state(state)
 }
 
@@ -37,6 +43,20 @@ pub async fn serve(
         .await
         .with_context(|| format!("监听 {} 失败", cfg.listen))?;
     tracing::info!(listen = %cfg.listen, "server 已启动");
+    let admin_user = std::env::var("MINIMON_ADMIN_USER")
+        .ok()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| "admin".to_string());
+    let admin_pw = std::env::var("MINIMON_ADMIN_PASSWORD")
+        .ok()
+        .filter(|p| !p.is_empty());
+    if let Some(pw) = db
+        .ensure_admin(&admin_user, admin_pw.as_deref())
+        .context("初始化管理员失败")?
+    {
+        // 唯一允许把密码写进日志的地方：仅首次创建时出现一次。
+        tracing::warn!("已创建管理员 {admin_user}，初始密码: {pw}（请登录后尽快修改）");
+    }
     let (state, ingest) = AppState::new(db, cfg).context("加载节点列表失败")?;
     serve_on(listener, state, ingest, shutdown).await
 }
@@ -68,7 +88,11 @@ pub async fn serve_on(
         let _ = stopping.wait_for(|v| *v).await;
         tokio::time::sleep(HTTP_DRAIN).await;
     };
-    let serve = axum::serve(listener, router(state.clone())).with_graceful_shutdown(signal);
+    let serve = axum::serve(
+        listener,
+        router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(signal);
     let served = tokio::select! {
         r = serve.into_future() => r.context("HTTP 服务异常退出"),
         _ = bounded_http => {

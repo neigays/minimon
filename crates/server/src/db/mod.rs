@@ -1,4 +1,5 @@
 mod aggregate;
+pub mod auth;
 mod metrics;
 pub mod nodes;
 pub mod rollup;
@@ -19,6 +20,10 @@ pub enum DbError {
     Migration(#[from] rusqlite_migration::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("密码哈希失败: {0}")]
+    Hash(String),
+    #[error("管理员账号尚未创建")]
+    NoAdmin,
     #[error("database lock poisoned")]
     Poisoned,
 }

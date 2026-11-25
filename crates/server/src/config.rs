@@ -84,6 +84,12 @@ impl ServerConfig {
         {
             return Err(ConfigError::BadRetention);
         }
+        // 空或纯空白的代理头视为未配置
+        self.real_ip_header = self
+            .real_ip_header
+            .take()
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty());
         if let Some(u) = &self.public_url {
             if !(u.starts_with("http://") || u.starts_with("https://")) {
                 return Err(ConfigError::BadPublicUrl);
@@ -180,6 +186,25 @@ mod tests {
         );
         let bad: ServerConfig = toml::from_str(r#"public_url = "m.example.com""#).unwrap();
         assert!(matches!(bad.validated(), Err(ConfigError::BadPublicUrl)));
+    }
+
+    #[test]
+    fn blank_real_ip_header_is_none() {
+        for t in ["", "   "] {
+            let c = ServerConfig {
+                real_ip_header: Some(t.into()),
+                ..ServerConfig::default()
+            };
+            assert_eq!(c.validated().unwrap().real_ip_header, None);
+        }
+        let c = ServerConfig {
+            real_ip_header: Some(" X-Real-IP ".into()),
+            ..ServerConfig::default()
+        };
+        assert_eq!(
+            c.validated().unwrap().real_ip_header.as_deref(),
+            Some("X-Real-IP")
+        );
     }
 
     #[test]

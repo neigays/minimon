@@ -25,6 +25,19 @@ enum Cmd {
         #[command(subcommand)]
         cmd: NodeCmd,
     },
+    /// 管理员账号维护
+    Admin {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[command(subcommand)]
+        cmd: AdminCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminCmd {
+    /// 生成新随机密码并打印到 stdout，同时作废所有会话
+    ResetPassword,
 }
 
 #[derive(Subcommand)]
@@ -68,6 +81,18 @@ fn main() -> Result<()> {
                 .build()
                 .context("创建 tokio 运行时失败")?
                 .block_on(minimon_server::serve(cfg, shutdown_signal()))?;
+        }
+        Cmd::Admin { config, cmd } => {
+            let (_, db) = open_db(config.as_deref())?;
+            match cmd {
+                AdminCmd::ResetPassword => {
+                    let pw = db
+                        .reset_admin_password()
+                        .context("重置失败（管理员尚未创建时请先启动一次 server）")?;
+                    println!("{pw}");
+                    eprintln!("新密码已生成，所有会话已作废。请登录后尽快修改。");
+                }
+            }
         }
         Cmd::Node { config, cmd } => {
             let (cfg, db) = open_db(config.as_deref())?;
