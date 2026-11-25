@@ -39,6 +39,8 @@ pub struct AppState {
     /// 每节点本期流量用量缓存（仅管理员视图使用）。
     traffic: Arc<RwLock<HashMap<i64, crate::traffic::TrafficUsage>>>,
     traffic_lock: Arc<tokio::sync::Mutex<()>>,
+    /// 探测任务缓存（增删改后重载）。
+    pub(crate) probe: Arc<crate::probe::ProbeCache>,
     pub(crate) ingest: IngestHandle,
     pub(crate) cfg: Arc<ServerConfig>,
     shutdown: Arc<watch::Sender<bool>>,
@@ -75,6 +77,7 @@ impl AppState {
     /// 创建状态并启动入库线程；`IngestJoin` 交给负责关停的一方（`serve_on`）。
     pub fn new(db: Arc<Db>, cfg: ServerConfig) -> Result<(Self, IngestJoin), StateError> {
         let nodes = Arc::new(RwLock::new(Arc::new(db.list_nodes()?)));
+        let probe_tasks = db.list_probe_tasks()?;
         let live = LiveHub::new();
         let last_known: LastKnown = Arc::new(RwLock::new(db.last_reports()?));
         // 缺省（未设置）表示关闭。
@@ -99,6 +102,7 @@ impl AppState {
             timezone: Arc::new(RwLock::new(timezone)),
             traffic: Arc::default(),
             traffic_lock: Arc::default(),
+            probe: Arc::new(crate::probe::ProbeCache::with(probe_tasks)),
             ingest,
             cfg: Arc::new(cfg),
             shutdown: Arc::new(watch::channel(false).0),

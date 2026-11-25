@@ -9,6 +9,8 @@ mod history;
 mod ingest;
 mod live;
 pub mod period;
+pub mod probe;
+mod probe_api;
 mod rollup;
 pub mod state;
 pub mod traffic;
@@ -39,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/nodes/{id}/history", get(history::get))
         .merge(auth_api::routes())
         .merge(admin::routes())
+        .merge(probe_api::routes())
         .fallback(web::fallback)
         .layer(axum::middleware::from_fn(auth::require_json))
         .with_state(state)

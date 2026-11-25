@@ -43,7 +43,7 @@ impl FromRequestParts<AppState> for NodeId {
     }
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, DbError> + Send + 'static,
 ) -> Result<T, ApiError> {
     match tokio::task::spawn_blocking(f).await {
@@ -272,12 +272,20 @@ async fn remove(
     if !blocking(move || db.delete_node(id)).await? {
         return Err(ApiError::not_found(MSG_NO_NODE));
     }
+    // 无外键：探测关联与数据在代码里清理。失败只记日志（保留期清理会兜底），节点已删除。
+    let db = state.db.clone();
+    if let Err(e) = blocking(move || db.delete_probe_data_for_node(id)).await {
+        tracing::error!(node_id = id, "删除节点后清理探测数据失败: {e:?}");
+    }
     // id 会被 SQLite 复用：内存里的最后已知上报必须一并清掉。
     state.forget_node(id);
     // 再吊销一次：删除前刚通过认证、尚在握手的 agent 也要被拒绝。
     state.registry().revoke(id);
     if let Err(e) = state.reload_nodes().await {
         tracing::error!(error = %e, "删除节点后刷新缓存失败");
+    }
+    if let Err(e) = state.reload_probe_tasks().await {
+        tracing::error!(error = %e, "删除节点后刷新探测任务缓存失败");
     }
     state.publish_resync();
     Ok(StatusCode::NO_CONTENT)
