@@ -30,8 +30,14 @@ export function createAppRouter(isAuthed: () => boolean, isLoginRequired: () => 
       { path: '/', component: WallView },
       { path: '/node/:id', component: () => import('./views/NodeView.vue') },
       { path: '/login', component: LoginView },
-      { path: '/admin', component: () => import('./views/AdminView.vue') },
-      { path: '/admin/settings', component: () => import('./views/AdminSettingsView.vue') },
+      {
+        path: '/admin',
+        component: () => import('./views/admin/AdminLayout.vue'),
+        children: [
+          { path: '', component: () => import('./views/admin/NodesView.vue') },
+          { path: 'settings', component: () => import('./views/admin/SettingsView.vue') },
+        ],
+      },
       { path: '/:rest(.*)*', redirect: '/' },
     ],
   })
