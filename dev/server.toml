@@ -1,0 +1,3 @@
+listen = "127.0.0.1:25780"
+data_dir = "./data"
+report_interval_secs = 3

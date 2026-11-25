@@ -661,6 +661,7 @@ dependencies = [
  "axum",
  "clap",
  "futures-util",
+ "minimon-agent",
  "minimon-common",
  "rand 0.10.4",
  "rusqlite",

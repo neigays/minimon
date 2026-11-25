@@ -24,6 +24,7 @@ tracing.workspace = true
 tracing-subscriber = "0.3.23"
 
 [dev-dependencies]
+minimon-agent = { workspace = true }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 tempfile = "3.27.0"
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect"] }
