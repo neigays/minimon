@@ -56,6 +56,11 @@ export function applyMsg(nodes: PublicNode[], msg: LiveMsg): PublicNode[] {
   })
 }
 
+/** 断线时无法确认节点状态，不能显示为在线。 */
+export function isLive(node: PublicNode, connected: boolean): boolean {
+  return connected && node.online
+}
+
 export function liveUrl(loc: Pick<Location, 'protocol' | 'host'>): string {
   const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${loc.host}/api/live`

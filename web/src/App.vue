@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import NodeCard from './components/NodeCard.vue'
-import { useLive } from './live'
+import { isLive, useLive } from './live'
 
 const { nodes, connected } = useLive()
 </script>
@@ -13,7 +13,7 @@ const { nodes, connected } = useLive()
   <main>
     <p v-if="nodes.length === 0" class="empty">暂无节点</p>
     <div v-else class="grid">
-      <NodeCard v-for="n in nodes" :key="n.id" :node="n" />
+      <NodeCard v-for="n in nodes" :key="n.id" :node="n" :live="isLive(n, connected)" />
     </div>
   </main>
 </template>

@@ -25,13 +25,18 @@ pub async fn fallback(uri: Uri) -> Response {
     serve(INDEX).unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
 }
 
-fn serve(path: &str) -> Option<Response> {
-    let file = Assets::get(path)?;
-    let cache = if path.starts_with("assets/") {
+/// 带 hash 的 `assets/` 下文件可永久缓存，其余（含 index.html）每次校验。
+fn cache_control(path: &str) -> &'static str {
+    if path.starts_with("assets/") {
         "public, max-age=31536000, immutable"
     } else {
         "no-cache"
-    };
+    }
+}
+
+fn serve(path: &str) -> Option<Response> {
+    let file = Assets::get(path)?;
+    let cache = cache_control(path);
     let mime = file.metadata.mimetype().to_string();
     let mut resp = file.data.into_owned().into_response();
     let h = resp.headers_mut();
@@ -40,4 +45,20 @@ fn serve(path: &str) -> Option<Response> {
     }
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
     Some(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cache_control;
+
+    #[test]
+    fn cache_control_branches() {
+        let immutable = "public, max-age=31536000, immutable";
+        assert_eq!(cache_control("assets/index-abc.js"), immutable);
+        assert_eq!(cache_control("assets/sub/x.css"), immutable);
+        assert_eq!(cache_control("index.html"), "no-cache");
+        assert_eq!(cache_control("favicon.ico"), "no-cache");
+        assert_eq!(cache_control("assetsx/a.js"), "no-cache");
+        assert_eq!(cache_control("sub/assets/a.js"), "no-cache");
+    }
 }

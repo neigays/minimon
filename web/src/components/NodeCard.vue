@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { formatBytes, formatRate, formatUptime } from '../format'
 import type { PublicNode } from '../live'
 
-const props = defineProps<{ node: PublicNode }>()
+const props = defineProps<{ node: PublicNode; live: boolean }>()
 
 const r = computed(() => props.node.latest)
 const memPct = computed(() => {
@@ -14,9 +14,9 @@ const dash = '—'
 </script>
 
 <template>
-  <section class="card" :class="{ off: !node.online }">
+  <section class="card" :class="{ off: !live }">
     <div class="head">
-      <span class="dot" :class="{ on: node.online }"></span>
+      <span class="dot" :class="{ on: live }"></span>
       <strong class="name">{{ node.name }}</strong>
       <span class="sub">{{ node.os ?? dash }} / {{ node.arch ?? dash }}</span>
     </div>
