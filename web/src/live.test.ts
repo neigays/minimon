@@ -4,7 +4,7 @@ import { applyMsg, isLive, liveUrl, loginRequiredAfterGuestSuccess, viewerChange
 const node = (id: number, online = false): PublicNode => ({
   id, name: `n${id}`, online, sort: 0, group: '', region: '', os: null, arch: null,
   cpu_model: null, cpu_cores: null, virtualization: null, mem_total: null, swap_total: null,
-  disk_total: null, last_seen_ms: null, latest: null,
+  disk_total: null, last_seen_ms: null, latest: null, probes: [],
 })
 const report = { cpu: 5 } as Report
 
@@ -42,4 +42,13 @@ test('viewer change detection', () => {
 })
 test('guest success clears loginRequired', () => {
   expect(loginRequiredAfterGuestSuccess()).toBe(false)
+})
+
+test('probe and traffic messages', () => {
+  const n = { ...node(1), traffic: { quota: null, reset_day: 1, mode: 'sum', used: 1, rx: 1, tx: 0, period_start_ms: 0, period_end_ms: 9 } } as PublicNode
+  const p = applyMsg([n], { type: 'probe', node_id: 1, task_id: 3, name: '移动', avg_ms: 5, loss: 0, error: null })
+  expect(p[0].probes[0].name).toBe('移动')
+  const t = applyMsg([n], { type: 'traffic', node_id: 1, used: 50, rx: 30, tx: 20, quota: 100, period_start_ms: 1, period_end_ms: 2 })
+  expect(t[0].traffic).toMatchObject({ used: 50, quota: 100, reset_day: 1, mode: 'sum', period_end_ms: 2 })
+  expect(applyMsg([node(1)], { type: 'traffic', node_id: 1, used: 1, rx: 1, tx: 0, quota: null, period_start_ms: 0, period_end_ms: 1 })[0].traffic).toBeUndefined()
 })

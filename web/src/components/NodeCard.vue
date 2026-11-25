@@ -2,8 +2,10 @@
 import { computed } from 'vue'
 import { formatRate, formatShort, formatUptime } from '../format'
 import type { PublicNode } from '../live'
-import { offlineFor, statusOf, usagePct } from '../status'
+import { expireLevel, expireText, formatDecBytes, quotaPct } from '../traffic'
+import { level, offlineFor, statusOf, usagePct } from '../status'
 import Meter from './Meter.vue'
+import ProbeRow from './ProbeRow.vue'
 import StatusPill from './StatusPill.vue'
 
 const props = defineProps<{ node: PublicNode; connected: boolean; now: number }>()
@@ -17,6 +19,8 @@ const sub = computed(() => {
 })
 const memTotal = computed(() => props.node.mem_total)
 const diskTotal = computed(() => r.value?.disk_total || props.node.disk_total)
+const tr = computed(() => props.node.traffic ?? null)
+const days = computed(() => props.node.expire_days ?? null)
 const offlineText = computed(() => {
   if (!props.connected) return '与服务器的连接已中断'
   const seen = props.node.last_seen_ms
@@ -36,6 +40,14 @@ const offlineText = computed(() => {
       <Meter label="CPU" :pct="r.cpu" :value="r.cpu.toFixed(0) + '%'" />
       <Meter label="内存" :pct="usagePct(r.mem_used, memTotal)" :value="memTotal ? `${formatShort(r.mem_used)} / ${formatShort(memTotal)}` : formatShort(r.mem_used)" />
       <Meter label="磁盘" :pct="usagePct(r.disk_used, diskTotal)" :value="diskTotal ? `${formatShort(r.disk_used)} / ${formatShort(diskTotal)}` : formatShort(r.disk_used)" />
+      <ProbeRow v-if="node.probes?.length" :probes="node.probes" />
+      <div v-if="tr || days !== null" class="adm">
+        <template v-if="tr">
+          <span class="tl">本月 <b class="num">{{ formatDecBytes(tr.used) }}</b><template v-if="tr.quota"> / {{ formatDecBytes(tr.quota) }}</template></span>
+          <span v-if="tr.quota" class="tbar" role="meter" aria-label="本月流量" :aria-valuenow="Math.round(quotaPct(tr.used, tr.quota))" aria-valuemin="0" aria-valuemax="100"><i :class="level(quotaPct(tr.used, tr.quota))" :style="{ width: quotaPct(tr.used, tr.quota).toFixed(1) + '%' }"></i></span>
+        </template>
+        <span v-if="days !== null" class="exp" :class="expireLevel(days)">{{ expireText(days) }}</span>
+      </div>
       <div v-if="off" class="foot">
         <span>{{ offlineText }}</span>
         <span>以上为{{ connected ? '离线' : '断线' }}前最后数据</span>
@@ -47,10 +59,13 @@ const offlineText = computed(() => {
         <span>在线 <b>{{ formatUptime(r.uptime_secs) }}</b></span>
       </div>
     </template>
-    <div v-else class="foot">
+    <template v-else>
+      <ProbeRow v-if="node.probes?.length" :probes="node.probes" />
+      <div class="foot">
       <span>暂无数据</span>
       <span v-if="off">{{ offlineText }}</span>
-    </div>
+      </div>
+    </template>
   </RouterLink>
 </template>
 
@@ -64,6 +79,15 @@ const offlineText = computed(() => {
 .sub { color: var(--muted); font-size: 12px; margin-top: -6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .foot { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 9px; }
 .foot b { color: var(--fg-2); font-weight: 500; }
+.adm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; color: var(--muted); }
+.adm .tl b { color: var(--fg-2); font-weight: 500; }
+.tbar { flex: 1; min-width: 48px; height: 3px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.tbar i { display: block; height: 100%; background: var(--ok); }
+.tbar i.hi { background: var(--warn); }
+.tbar i.crit { background: var(--bad); }
+.exp { margin-left: auto; }
+.exp.hi { color: var(--warn); font-weight: 600; }
+.exp.crit { color: var(--bad); font-weight: 600; }
 .card.is-off { opacity: 0.62; }
 .card.is-off :deep(.bar i) { background: var(--line-strong); }
 </style>

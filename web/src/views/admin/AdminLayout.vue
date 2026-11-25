@@ -4,7 +4,7 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 const route = useRoute()
 const items: { to?: string; label: string; hint?: string }[] = [
   { to: '/admin', label: '节点管理' },
-  { label: '探测任务', hint: 'M3' },
+  { to: '/admin/probes', label: '探测任务' },
   { label: '告警规则', hint: 'M4' },
   { label: '通知设置', hint: 'M4' },
   { to: '/admin/settings', label: '系统设置' },

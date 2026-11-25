@@ -6,6 +6,7 @@ import ConfirmButton from '../../components/ConfirmButton.vue'
 import StatusPill from '../../components/StatusPill.vue'
 import { useLive, type PublicNode } from '../../live'
 import { statusOf } from '../../status'
+import { bytesToQuotaInput, gbToBytes, MODE_LABELS, type TrafficMode } from '../../traffic'
 
 type AdminNode = PublicNode & { hidden: boolean; ip: string | null; note: string }
 
@@ -108,14 +109,30 @@ function resetToken(n: AdminNode) {
 // ---------- 新增 / 编辑弹层（原生 dialog：自带焦点陷阱、Esc 关闭、关闭后还原焦点） ----------
 const dlg = ref<HTMLDialogElement | null>(null)
 const editing = ref<AdminNode | null>(null) // null 表示新增
-const form = ref({ name: '', group: '', region: '', note: '' })
+const blankForm = () => ({ name: '', group: '', region: '', note: '', quota: '', unit: 'GB' as 'GB' | 'TB', resetDay: '1', mode: 'sum' as TrafficMode, expire: '' })
+const form = ref(blankForm())
 const formErr = ref('')
 
 let opener: HTMLElement | null = null
 function openForm(n: AdminNode | null) {
   opener = document.activeElement as HTMLElement | null
   editing.value = n
-  form.value = n ? { name: n.name, group: n.group, region: n.region, note: n.note } : { name: '', group: '', region: '', note: '' }
+  form.value = blankForm()
+  if (n) {
+    const f = form.value
+    Object.assign(f, { name: n.name, group: n.group, region: n.region, note: n.note })
+    const t = n.traffic
+    if (t) {
+      if (t.quota) {
+        const q = bytesToQuotaInput(t.quota)
+        f.quota = String(q.value)
+        f.unit = q.unit
+      }
+      f.resetDay = String(t.reset_day)
+      f.mode = t.mode
+    }
+    f.expire = n.expire_date ?? ''
+  }
   formErr.value = ''
   dlg.value?.showModal()
 }
@@ -137,7 +154,18 @@ async function submitForm() {
   if (!name) return void (formErr.value = '请输入名称')
   if (f.region && f.region.length !== 2) return void (formErr.value = '地区需为空或 2 位字母代码')
   formErr.value = ''
-  const body = { name, group: f.group.trim(), region: f.region, note: f.note }
+  const body: Record<string, unknown> = { name, group: f.group.trim(), region: f.region, note: f.note }
+  if (editing.value) {
+    const q = f.quota.trim()
+    const qv = Number(q)
+    if (q && (!Number.isFinite(qv) || qv <= 0)) return void (formErr.value = '月额度需为大于 0 的数字，留空表示不限')
+    const day = Number(f.resetDay)
+    if (!Number.isInteger(day) || day < 1 || day > 31) return void (formErr.value = '重置日需为 1 到 31 的整数')
+    body.traffic_quota = q ? gbToBytes(qv, f.unit) : null
+    body.traffic_reset_day = day
+    body.traffic_mode = f.mode
+    body.expire_date = f.expire || null
+  }
   if (busy.value) return
   busy.value = true
   try {
@@ -217,6 +245,21 @@ async function submitForm() {
         <div class="field"><label for="f-group">分组</label><input id="f-group" v-model="form.group" maxlength="32" autocomplete="off" /></div>
         <div class="field"><label for="f-region">地区（2 位字母代码，可留空）</label><input id="f-region" :value="form.region" maxlength="2" placeholder="如 HK" autocomplete="off" @input="onRegion" /></div>
         <div class="field"><label for="f-note">备注（仅管理员可见）</label><input id="f-note" v-model="form.note" maxlength="500" autocomplete="off" /></div>
+        <template v-if="editing">
+          <div class="field">
+            <label for="f-quota">月流量额度（留空表示不限，十进制：1 GB = 10⁹ 字节）</label>
+            <div class="inline">
+              <input id="f-quota" v-model="form.quota" inputmode="decimal" placeholder="不限" autocomplete="off" />
+              <select v-model="form.unit" aria-label="额度单位"><option>GB</option><option>TB</option></select>
+            </div>
+          </div>
+          <div class="field"><label for="f-day">流量重置日（1–31，当月没有该日取月末）</label><input id="f-day" v-model="form.resetDay" inputmode="numeric" maxlength="2" autocomplete="off" /></div>
+          <div class="field"><label for="f-mode">计费口径</label><select id="f-mode" v-model="form.mode"><option v-for="(l, k) in MODE_LABELS" :key="k" :value="k">{{ l }}</option></select></div>
+          <div class="field">
+            <label for="f-exp">到期日（仅管理员可见）</label>
+            <div class="inline"><input id="f-exp" v-model="form.expire" type="date" /><button class="btn ghost" type="button" :disabled="!form.expire" @click="form.expire = ''">清空</button></div>
+          </div>
+        </template>
         <div v-if="formErr" class="err" role="alert">{{ formErr }}</div>
         <div class="row end">
           <button class="btn ghost" type="button" @click="closeForm">取消</button>
@@ -259,5 +302,10 @@ td.empty { text-align: center; }
 .dlg { background: var(--surface); color: var(--fg); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 20px; width: min(420px, calc(100vw - 32px)); }
 .dlg::backdrop { background: rgba(0, 0, 0, 0.5); }
 .dlg form { display: grid; gap: 12px; }
+.dlg { max-height: calc(100vh - 32px); }
+.inline { display: flex; gap: 8px; }
+.inline input { flex: 1; min-width: 0; }
+.dlg select, .dlg input[type=date] { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+.dlg select:focus, .dlg input:focus { border-color: var(--c1); outline: none; }
 .dlg h3 { margin: 0; font-size: 15px; }
 </style>

@@ -25,7 +25,7 @@ function cssColor(v: string): string {
 
 const latest = computed(() =>
   props.series.map((s) => {
-    for (let i = s.values.length - 1; i >= 0; i--) if (s.values[i] !== null) return s.values[i]
+    for (let i = s.values.length - 1; i >= 0; i--) if (s.values[i] != null) return s.values[i]
     return null
   }),
 )

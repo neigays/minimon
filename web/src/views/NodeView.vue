@@ -8,6 +8,8 @@ import { formatBytes, formatUptime } from '../format'
 import { buildCharts, fetchHistory, granularityNote, RANGES, toHistoryErr, type History, type HistoryErr, type Range } from '../history'
 import { useLive, type PublicNode } from '../live'
 import { statusOf } from '../status'
+import { buildProbeCharts, fetchProbeHistory, type ProbeHistory } from '../probe'
+import { expireLevel, expireText, formatDecBytes, MODE_LABELS } from '../traffic'
 
 type Info = PublicNode & { hostname?: string | null; kernel?: string | null; agent_version?: string | null; ip?: string | null; note?: string }
 
@@ -19,6 +21,7 @@ const id = computed(() => String(route.params.id))
 const node = computed(() => nodes.value.find((n) => String(n.id) === id.value) as Info | undefined)
 const range = ref<Range>('1h')
 const hist = ref<History | null>(null)
+const probeHist = ref<ProbeHistory | null>(null)
 const err = ref<HistoryErr | null>(null)
 const loading = ref(true)
 let seq = 0
@@ -27,9 +30,13 @@ let timer: ReturnType<typeof setInterval> | undefined
 async function load(showLoading: boolean) {
   const mine = ++seq
   if (showLoading) loading.value = true
+  // 探测历史失败不影响主图表：静默置空。
+  const pp = fetchProbeHistory(id.value, range.value).catch(() => null)
   try {
     const h = await fetchHistory(id.value, range.value)
+    const ph = await pp
     if (mine !== seq) return // 已有更新的请求，丢弃过期响应
+    probeHist.value = ph
     hist.value = h
     err.value = null
   } catch (e) {
@@ -48,6 +55,7 @@ function selectRange(r: Range) {
   if (r === range.value) return
   range.value = r
   hist.value = null
+  probeHist.value = null
   err.value = null
 }
 
@@ -62,6 +70,7 @@ watch([range, id], (_n, [, oldId]) => {
   // 切换节点：立刻清掉上一个节点的数据与错误（含 notfound），避免短暂显示旧节点
   if (oldId !== id.value) {
     hist.value = null
+    probeHist.value = null
     err.value = null
   }
   void load(true)
@@ -80,6 +89,11 @@ onBeforeUnmount(() => {
 // memTotal 是原始值：live 推送替换 node 对象但数值不变时，built 不会重算，图表不会被重建。
 const memTotal = computed(() => node.value?.mem_total ?? null)
 const built = computed(() => (hist.value ? buildCharts(hist.value, memTotal.value) : null))
+const probeBuilt = computed(() => {
+  const h = probeHist.value
+  if (!h || !h.tasks.some((t) => t.ts.length > 0)) return null
+  return buildProbeCharts(h)
+})
 const status = computed(() => (node.value ? statusOf(node.value, connected.value) : 'offline'))
 const r = computed(() => node.value?.latest ?? null)
 const dash = (s: string | null | undefined) => (s ? s : '—')
@@ -107,6 +121,25 @@ const priv = computed(() => {
     ['备注', dash(n.note)],
   ]
 })
+const fmtDay = (ms: number) => {
+  const d = new Date(ms)
+  const p = (x: number) => String(x).padStart(2, '0')
+  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+const adminExtra = computed<[string, string, string][]>(() => {
+  const n = node.value
+  if (!n || !user.value) return []
+  const out: [string, string, string][] = []
+  const t = n.traffic
+  if (t) {
+    out.push(['本月流量', `${formatDecBytes(t.used)}（↓${formatDecBytes(t.rx)} ↑${formatDecBytes(t.tx)}）`, ''])
+    out.push(['账期', `${fmtDay(t.period_start_ms)} – ${fmtDay(t.period_end_ms)}`, ''])
+    out.push(['月额度', t.quota ? formatDecBytes(t.quota) : '不限', ''])
+    out.push(['计费口径', MODE_LABELS[t.mode] ?? t.mode, ''])
+  }
+  out.push(['到期日', n.expire_date ? `${n.expire_date}${n.expire_days != null ? `（${expireText(n.expire_days)}）` : ''}` : '未设置', expireLevel(n.expire_days)])
+  return out
+})
 </script>
 
 <template>
@@ -131,6 +164,7 @@ const priv = computed(() => {
       <dl v-if="node" class="info">
         <div v-for="[k, v] in pub" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></div>
         <div v-for="[k, v] in priv" :key="k"><dt>{{ k }}<span class="lock">仅管理员</span></dt><dd class="num">{{ v }}</dd></div>
+        <div v-for="[k, v, lv] in adminExtra" :key="k"><dt>{{ k }}<span class="lock">仅管理员</span></dt><dd class="num" :class="lv">{{ v }}</dd></div>
         <div v-if="!user"><dt>更多信息</dt><dd class="muted">IP、主机名等<RouterLink to="/login">登录后可见</RouterLink></dd></div>
       </dl>
 
@@ -145,6 +179,9 @@ const priv = computed(() => {
       <p v-else-if="loading && !hist" class="muted">加载中…</p>
       <p v-else-if="hist && hist.ts.length === 0" class="empty">该时间范围内暂无数据</p>
       <div v-else-if="built" class="charts">
+        <template v-if="probeBuilt">
+          <HistoryChart v-for="c in probeBuilt.charts" :key="c.key" :title="c.title" :series="c.series" :ts="probeBuilt.ts" :unit="c.unit" :max="c.max" />
+        </template>
         <HistoryChart v-for="c in built.charts" :key="c.key" :title="c.title" :series="c.series" :ts="built.ts" :unit="c.unit" :max="c.max" />
       </div>
     </template>
@@ -166,6 +203,8 @@ const priv = computed(() => {
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: var(--surface); }
 .seg button { border: 0; background: transparent; padding: 4px 12px; border-radius: 6px; cursor: pointer; color: var(--muted); }
 .seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
+.info dd.hi { color: var(--warn); }
+.info dd.crit { color: var(--bad); }
 .gran { font-size: 12px; color: var(--muted); }
 .charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 12px; }
 </style>

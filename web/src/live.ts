@@ -1,6 +1,8 @@
 import { ref, watch } from 'vue'
 import { api } from './api'
 import { useAuth } from './auth'
+import { applyProbeMsg, type ProbeMsg, type ProbeSummary } from './probe'
+import type { Traffic } from './traffic'
 
 export interface Report {
   ts_ms: number
@@ -40,6 +42,11 @@ export interface PublicNode {
   last_seen_ms: number | null
   /** 最后已知上报：离线时保留，从未上报过为 null。 */
   latest: Report | null
+  probes: ProbeSummary[]
+  /** 以下仅管理员视图携带。 */
+  traffic?: Traffic | null
+  expire_date?: string | null
+  expire_days?: number | null
 }
 
 export type LiveMsg =
@@ -47,10 +54,13 @@ export type LiveMsg =
   | { type: 'report'; node_id: number; report: Report }
   | { type: 'online'; node_id: number }
   | { type: 'offline'; node_id: number }
+  | ProbeMsg
+  | { type: 'traffic'; node_id: number; used: number; rx: number; tx: number; quota: number | null; period_start_ms: number; period_end_ms: number }
 
 /** 幂等地把一条消息应用到节点列表；未知节点的增量消息被忽略。 */
 export function applyMsg(nodes: PublicNode[], msg: LiveMsg): PublicNode[] {
   if (msg.type === 'snapshot') return msg.nodes
+  if (msg.type === 'probe') return applyProbeMsg(nodes, msg)
   return nodes.map((n) => {
     if (n.id !== msg.node_id) return n
     switch (msg.type) {
@@ -60,6 +70,11 @@ export function applyMsg(nodes: PublicNode[], msg: LiveMsg): PublicNode[] {
         return { ...n, online: true }
       case 'offline':
         return { ...n, online: false }
+      case 'traffic': {
+        if (!n.traffic) return n
+        const { used, rx, tx, quota, period_start_ms, period_end_ms } = msg
+        return { ...n, traffic: { ...n.traffic, used, rx, tx, quota, period_start_ms, period_end_ms } }
+      }
     }
   })
 }

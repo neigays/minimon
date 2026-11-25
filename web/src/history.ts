@@ -36,7 +36,7 @@ export function granularityNote(g: Granularity): string {
   return g === 'raw' ? '原始数据（约每 3 秒一点）' : g === '1m' ? '1 分钟聚合' : '15 分钟聚合'
 }
 
-export type Unit = 'pct' | 'rate' | 'num' | 'count'
+export type Unit = 'pct' | 'rate' | 'num' | 'count' | 'ms'
 
 export function formatValue(unit: Unit, v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return '—'
@@ -45,6 +45,7 @@ export function formatValue(unit: Unit, v: number | null | undefined): string {
     case 'rate': return formatRate(v)
     case 'num': return v.toFixed(2)
     case 'count': return String(Math.round(v))
+    case 'ms': return `${v < 10 ? v.toFixed(1) : Math.round(v)} ms`
   }
 }
 
@@ -84,7 +85,7 @@ export function withGaps(
   return { ts: outTs, cols: out }
 }
 
-export interface ChartSeries { name: string; values: (number | null)[]; color: string; dashed?: boolean }
+export interface ChartSeries { name: string; values: (number | null | undefined)[]; color: string; dashed?: boolean }
 export interface ChartSpec { key: string; title: string; unit: Unit; max?: number; series: ChartSeries[] }
 
 const C1 = 'var(--c1)'
