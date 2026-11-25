@@ -4,6 +4,7 @@
 //! `PublicNode` 里不得出现 IP、主机名、内核、备注、agent 版本、hidden、created_ms。
 
 use crate::state::AppState;
+use crate::traffic::TrafficUsage;
 use minimon_common::protocol::{Hello, Report};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -40,6 +41,9 @@ pub struct AdminNode {
     pub ip: Option<String>,
     pub note: String,
     pub created_ms: i64,
+    pub traffic: Option<TrafficUsage>,
+    pub expire_date: Option<String>,
+    pub expire_days: Option<i64>,
 }
 
 /// 快照里的节点列表，序列化为同一个 JSON 数组。
@@ -161,6 +165,12 @@ fn admin_view(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> AdminNo
         ip: n.last_ip.clone(),
         note: n.note.clone(),
         created_ms: n.created_ms,
+        traffic: state.traffic(n.id),
+        expire_date: n.expire_date.clone(),
+        expire_days: n
+            .expire_date
+            .as_deref()
+            .and_then(|d| crate::period::expire_days(d, &state.timezone(), crate::db::now_ms())),
     }
 }
 

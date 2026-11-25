@@ -5,6 +5,7 @@ mod last_report;
 mod metrics;
 pub mod nodes;
 pub mod rollup;
+mod traffic;
 
 use rusqlite::{Connection, OpenFlags};
 use rusqlite_migration::{M, Migrations};

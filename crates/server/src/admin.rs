@@ -3,8 +3,9 @@
 //! 每次变更成功后：重载节点缓存，再 `publish_resync()`，让已打开的页面立即同步。
 
 use crate::auth::{AdminOnly, AppJson};
-use crate::db::{DbError, NodePatch};
+use crate::db::{DbError, NodePatch, TrafficMode};
 use crate::error::ApiError;
+use crate::period::parse_tz;
 use crate::state::AppState;
 use crate::views::{self, AdminNode};
 use axum::extract::{FromRequestParts, Path, State};
@@ -172,6 +173,53 @@ struct PatchReq {
     region: Option<String>,
     note: Option<String>,
     hidden: Option<bool>,
+    #[serde(default, deserialize_with = "tri_state")]
+    traffic_quota: Option<Option<i64>>,
+    traffic_reset_day: Option<i64>,
+    traffic_mode: Option<String>,
+    #[serde(default, deserialize_with = "tri_state")]
+    expire_date: Option<Option<String>>,
+}
+
+/// 三态字段：缺省 = 不改（`None`），显式 null = 清除（`Some(None)`），值 = 设置。
+fn tri_state<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// 流量与到期字段校验。
+fn validate_billing(req: &PatchReq) -> Result<BillingPatch, ApiError> {
+    if let Some(Some(q)) = req.traffic_quota
+        && q < 0
+    {
+        return Err(ApiError::bad_request("流量额度不能为负数"));
+    }
+    let reset_day = req
+        .traffic_reset_day
+        .map(|d| match u8::try_from(d) {
+            Ok(d @ 1..=31) => Ok(d),
+            _ => Err(ApiError::bad_request("重置日需为 1 到 31")),
+        })
+        .transpose()?;
+    let mode = req
+        .traffic_mode
+        .as_deref()
+        .map(|m| TrafficMode::parse(m).ok_or_else(|| ApiError::bad_request("未知计费口径")))
+        .transpose()?;
+    if let Some(Some(d)) = &req.expire_date
+        && !(d.len() == 10 && d.parse::<jiff::civil::Date>().is_ok())
+    {
+        return Err(ApiError::bad_request("到期日需为合法的 YYYY-MM-DD"));
+    }
+    Ok(BillingPatch { reset_day, mode })
+}
+
+struct BillingPatch {
+    reset_day: Option<u8>,
+    mode: Option<TrafficMode>,
 }
 
 async fn update(
@@ -180,6 +228,8 @@ async fn update(
     NodeId(id): NodeId,
     AppJson(req): AppJson<PatchReq>,
 ) -> Result<Json<AdminNode>, ApiError> {
+    let b = validate_billing(&req)?;
+    let billing_touched = req.traffic_quota.is_some() || b.reset_day.is_some() || b.mode.is_some();
     let f = validate(req.name, req.group, req.region, req.note)?;
     let patch = NodePatch {
         name: f.name,
@@ -187,12 +237,21 @@ async fn update(
         region: f.region,
         note: f.note,
         hidden: req.hidden,
+        traffic_quota: req.traffic_quota,
+        traffic_reset_day: b.reset_day,
+        traffic_mode: b.mode,
+        expire_date: req.expire_date,
     };
     let db = state.db.clone();
     if !blocking(move || db.update_node(id, &patch)).await? {
         return Err(ApiError::not_found(MSG_NO_NODE));
     }
-    refresh(&state).await?;
+    state.reload_nodes().await?;
+    if billing_touched {
+        // 先重算再同步：重新同步的快照里就带着新数字。
+        state.recompute_traffic(Some(vec![id])).await;
+    }
+    state.publish_resync();
     views::admin_node(&state, id)
         .map(Json)
         .ok_or_else(|| ApiError::not_found(MSG_NO_NODE))
@@ -274,17 +333,24 @@ async fn reorder(
 
 // ---------------------------------------------------------------- 设置
 
-pub async fn get_settings(_: AdminOnly, State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+fn settings_json(state: &AppState) -> serde_json::Value {
+    let tz = state.timezone();
+    serde_json::json!({
         "require_login": state.require_login(),
         "public_url": state.cfg.public_url,
-    }))
+        "timezone": tz.iana_name().unwrap_or(crate::period::DEFAULT_TZ),
+    })
+}
+
+pub async fn get_settings(_: AdminOnly, State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(settings_json(&state))
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsReq {
-    require_login: bool,
+    require_login: Option<bool>,
+    timezone: Option<String>,
 }
 
 async fn put_settings(
@@ -292,15 +358,30 @@ async fn put_settings(
     State(state): State<AppState>,
     AppJson(req): AppJson<SettingsReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let db = state.db.clone();
-    let v = if req.require_login { "1" } else { "0" };
-    blocking(move || db.set_setting("require_login", v)).await?;
-    state.set_require_login(req.require_login);
+    // 先校验再写入：非法时区不留下半截修改。
+    let tz = req
+        .timezone
+        .as_deref()
+        .map(|n| {
+            parse_tz(n)
+                .map(|tz| (n.to_string(), tz))
+                .ok_or_else(|| ApiError::bad_request("未知时区"))
+        })
+        .transpose()?;
+    if let Some(on) = req.require_login {
+        let db = state.db.clone();
+        let v = if on { "1" } else { "0" };
+        blocking(move || db.set_setting("require_login", v)).await?;
+        state.set_require_login(on);
+    }
+    if let Some((name, tz)) = tz {
+        let db = state.db.clone();
+        blocking(move || db.set_setting("timezone", &name)).await?;
+        state.set_timezone(tz);
+        state.recompute_traffic(None).await;
+    }
     state.publish_resync();
-    Ok(Json(serde_json::json!({
-        "require_login": req.require_login,
-        "public_url": state.cfg.public_url,
-    })))
+    Ok(Json(settings_json(&state)))
 }
 
 #[cfg(test)]

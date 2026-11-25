@@ -40,6 +40,9 @@ const ADMIN_EXTRA: &[&str] = &[
     "ip",
     "note",
     "created_ms",
+    "traffic",
+    "expire_date",
+    "expire_days",
 ];
 
 fn hello() -> Hello {

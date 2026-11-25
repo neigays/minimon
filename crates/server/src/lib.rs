@@ -11,6 +11,7 @@ mod live;
 pub mod period;
 mod rollup;
 pub mod state;
+pub mod traffic;
 mod views;
 mod web;
 mod ws_agent;
@@ -88,7 +89,7 @@ pub async fn serve_on(
     ingest: IngestJoin,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let rollup = rollup::spawn(state.db.clone(), &state.cfg, state.shutdown_rx());
+    let rollup = rollup::spawn(state.clone(), state.shutdown_rx());
     let mut stopping = state.shutdown_rx();
     let sig_state = state.clone();
     let signal = async move {

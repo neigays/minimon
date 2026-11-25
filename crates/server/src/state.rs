@@ -36,6 +36,9 @@ pub struct AppState {
     require_login: Arc<AtomicBool>,
     /// 全局时区（账期与到期日计算）；启动时从 `settings.timezone` 加载。
     timezone: Arc<RwLock<Tz>>,
+    /// 每节点本期流量用量缓存（仅管理员视图使用）。
+    traffic: Arc<RwLock<HashMap<i64, crate::traffic::TrafficUsage>>>,
+    traffic_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) ingest: IngestHandle,
     pub(crate) cfg: Arc<ServerConfig>,
     shutdown: Arc<watch::Sender<bool>>,
@@ -94,6 +97,8 @@ impl AppState {
             reload_lock: Arc::default(),
             require_login: Arc::new(AtomicBool::new(require_login)),
             timezone: Arc::new(RwLock::new(timezone)),
+            traffic: Arc::default(),
+            traffic_lock: Arc::default(),
             ingest,
             cfg: Arc::new(cfg),
             shutdown: Arc::new(watch::channel(false).0),
@@ -154,6 +159,14 @@ impl AppState {
 
     pub fn set_timezone(&self, tz: Tz) {
         *self.timezone.write().unwrap_or_else(|e| e.into_inner()) = tz;
+    }
+
+    pub(crate) fn traffic_cache(&self) -> &RwLock<HashMap<i64, crate::traffic::TrafficUsage>> {
+        &self.traffic
+    }
+
+    pub(crate) fn traffic_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.traffic_lock
     }
 
     /// 要求所有 live 会话按当前身份与设置重新同步（重发快照或关闭）。
@@ -384,6 +397,11 @@ pub enum LiveEvent {
         node_id: i64,
         report: Report,
     },
+    /// 本期流量用量更新（仅管理员连接收到）。
+    Traffic {
+        node_id: i64,
+        usage: crate::traffic::TrafficUsage,
+    },
     /// 可见性或整站登录设置变化：订阅者应重新同步。
     Resync,
 }
@@ -404,7 +422,7 @@ impl LiveHub {
         self.tx.subscribe()
     }
 
-    fn publish(&self, ev: LiveEvent) {
+    pub(crate) fn publish(&self, ev: LiveEvent) {
         // 没有订阅者时 send 返回 Err，属正常情况。
         let _ = self.tx.send(ev);
     }

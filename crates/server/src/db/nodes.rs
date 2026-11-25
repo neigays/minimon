@@ -94,8 +94,9 @@ fn parse_info(id: i64, json: Option<String>) -> Option<Hello> {
 }
 
 fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
+    let id: i64 = r.get(0)?;
     Ok(Node {
-        id: r.get(0)?,
+        id,
         name: r.get(1)?,
         sort: r.get(2)?,
         hidden: r.get::<_, i64>(3)? != 0,
@@ -107,10 +108,23 @@ fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
         last_seen_ms: r.get(9)?,
         created_ms: r.get(10)?,
         traffic_quota: r.get(11)?,
-        traffic_reset_day: r.get::<_, i64>(12)?.clamp(1, 31) as u8,
+        traffic_reset_day: {
+            let d: i64 = r.get(12)?;
+            if !(1..=31).contains(&d) {
+                tracing::warn!(
+                    node_id = id,
+                    reset_day = d,
+                    "traffic_reset_day 超出 1-31，已钳制"
+                );
+            }
+            d.clamp(1, 31) as u8
+        },
         traffic_mode: {
             let m: String = r.get(13)?;
-            TrafficMode::parse(&m).unwrap_or(TrafficMode::Sum)
+            TrafficMode::parse(&m).unwrap_or_else(|| {
+                tracing::warn!(node_id = id, mode = %m, "未知 traffic_mode，按 sum 处理");
+                TrafficMode::Sum
+            })
         },
         expire_date: r.get(14)?,
     })
@@ -124,6 +138,10 @@ pub struct NodePatch {
     pub region: Option<String>,
     pub note: Option<String>,
     pub hidden: Option<bool>,
+    pub traffic_quota: Option<Option<i64>>,
+    pub traffic_reset_day: Option<u8>,
+    pub traffic_mode: Option<TrafficMode>,
+    pub expire_date: Option<Option<String>>,
 }
 
 impl Db {
@@ -179,13 +197,24 @@ impl Db {
             let n = c.execute(
                 "UPDATE nodes SET name = coalesce(?1, name), grp = coalesce(?2, grp), \
                  region = coalesce(?3, region), note = coalesce(?4, note), \
-                 hidden = coalesce(?5, hidden) WHERE id = ?6",
+                 hidden = coalesce(?5, hidden), \
+                 traffic_quota = CASE WHEN ?6 THEN ?7 ELSE traffic_quota END, \
+                 traffic_reset_day = coalesce(?8, traffic_reset_day), \
+                 traffic_mode = coalesce(?9, traffic_mode), \
+                 expire_date = CASE WHEN ?10 THEN ?11 ELSE expire_date END \
+                 WHERE id = ?12",
                 params![
                     p.name,
                     p.group,
                     p.region,
                     p.note,
                     p.hidden.map(i64::from),
+                    p.traffic_quota.is_some(),
+                    p.traffic_quota.flatten(),
+                    p.traffic_reset_day.map(i64::from),
+                    p.traffic_mode.map(TrafficMode::as_str),
+                    p.expire_date.is_some(),
+                    p.expire_date.clone().flatten(),
                     id
                 ],
             )?;

@@ -217,7 +217,7 @@ async fn second_connection_kicks_first_without_offline() {
             match next_event(&mut live).await {
                 LiveEvent::Offline { .. } => panic!("不应出现 Offline"),
                 LiveEvent::Report { .. } => break,
-                LiveEvent::Online { .. } | LiveEvent::Resync => {}
+                LiveEvent::Online { .. } | LiveEvent::Resync | LiveEvent::Traffic { .. } => {}
             }
         }
     }

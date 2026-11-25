@@ -23,10 +23,28 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum LiveMsg {
-    Snapshot { nodes: NodeList },
-    Report { node_id: i64, report: Report },
-    Online { node_id: i64 },
-    Offline { node_id: i64 },
+    Snapshot {
+        nodes: NodeList,
+    },
+    Report {
+        node_id: i64,
+        report: Report,
+    },
+    Online {
+        node_id: i64,
+    },
+    Offline {
+        node_id: i64,
+    },
+    Traffic {
+        node_id: i64,
+        used: i64,
+        rx: i64,
+        tx: i64,
+        quota: Option<i64>,
+        period_start_ms: i64,
+        period_end_ms: i64,
+    },
 }
 
 /// 整站登录开启时访客不得读取任何节点数据。
@@ -117,6 +135,13 @@ fn to_msg(state: &AppState, admin: bool, ev: LiveEvent) -> Option<LiveMsg> {
         LiveEvent::Online { node_id }
         | LiveEvent::Offline { node_id }
         | LiveEvent::Report { node_id, .. } => *node_id,
+        LiveEvent::Traffic { node_id, .. } => {
+            // 流量字段仅管理员可见：访客连接一律丢弃。
+            if !admin {
+                return None;
+            }
+            *node_id
+        }
         LiveEvent::Resync => return None,
     };
     if !state
@@ -130,6 +155,15 @@ fn to_msg(state: &AppState, admin: bool, ev: LiveEvent) -> Option<LiveMsg> {
         LiveEvent::Online { node_id } => LiveMsg::Online { node_id },
         LiveEvent::Offline { node_id } => LiveMsg::Offline { node_id },
         LiveEvent::Report { node_id, report } => LiveMsg::Report { node_id, report },
+        LiveEvent::Traffic { node_id, usage } => LiveMsg::Traffic {
+            node_id,
+            used: usage.used,
+            rx: usage.rx,
+            tx: usage.tx,
+            quota: usage.quota,
+            period_start_ms: usage.period_start_ms,
+            period_end_ms: usage.period_end_ms,
+        },
         LiveEvent::Resync => return None,
     })
 }
