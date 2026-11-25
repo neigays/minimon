@@ -16,6 +16,8 @@ serde_json.workspace = true
 sysinfo = { workspace = true }
 tokio = { version = "1.54.1", features = ["rt", "macros", "time", "signal", "net", "sync"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+# 显式选定 ring 作为 rustls 加密后端，否则 wss:// 首次握手时 panic
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 toml = "1.2.3"
 tracing = { workspace = true }
 tracing-subscriber = "0.3.23"

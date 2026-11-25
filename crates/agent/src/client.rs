@@ -53,6 +53,8 @@ fn build_request(cfg: &AgentConfig) -> anyhow::Result<Request<()>> {
 
 /// 运行 agent 主循环，直到 `shutdown` 完成。连接失败或被拒绝时按退避重连，不返回错误。
 pub async fn run(cfg: AgentConfig, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
+    // wss:// 需要进程级 CryptoProvider；已安装（例如测试中多次调用 run）时返回 Err，忽略即可
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let req = build_request(&cfg)?;
     let mut collector = Collector::new().with_iface_include(cfg.iface_include.clone());
     let mut backoff = Backoff::new(cfg.backoff_base, cfg.backoff_max);

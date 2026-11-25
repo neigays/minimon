@@ -186,3 +186,32 @@ async fn flapping_server_does_not_reset_backoff() {
         .unwrap();
     assert!(res.is_ok());
 }
+
+/// 回归：wss:// 首次建 TLS 时 rustls 未选定 CryptoProvider 会 panic。
+/// 本地监听一个只接受 TCP 后立即关闭的端口，agent 应进入正常的失败重连，而不是 panic。
+#[tokio::test]
+async fn wss_connect_failure_does_not_panic() {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let mut c = cfg(addr);
+    c.server = format!("wss://{addr}");
+    c.backoff_base = Duration::from_millis(100);
+    c.backoff_max = Duration::from_millis(200);
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    let agent = tokio::spawn(run(c, async {
+        stop_rx.await.ok();
+    }));
+    // 至少两次 TCP 连接，证明 TLS 失败后走的是重连而不是崩溃
+    for _ in 0..2 {
+        let (s, _) = tokio::time::timeout(Duration::from_secs(5), l.accept())
+            .await
+            .expect("agent 未发起 TCP 连接")
+            .unwrap();
+        drop(s);
+    }
+    stop_tx.send(()).unwrap();
+    let res = tokio::time::timeout(Duration::from_secs(5), agent)
+        .await
+        .expect("agent 未在时限内退出");
+    assert!(res.expect("agent 任务 panic").is_ok());
+}
