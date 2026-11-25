@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { applyMsg, isLive, liveUrl, type PublicNode, type Report } from './live'
+import { applyMsg, isLive, liveUrl, loginRequiredAfterGuestSuccess, viewerChanged, type PublicNode, type Report } from './live'
 
 const node = (id: number, online = false): PublicNode => ({
   id, name: `n${id}`, online, sort: 0, group: '', region: '', os: null, arch: null,
@@ -32,4 +32,14 @@ test('disconnected hides liveness', () => {
   expect(isLive(node(1, true), true)).toBe(true)
   expect(isLive(node(1, true), false)).toBe(false)
   expect(isLive(node(1, false), true)).toBe(false)
+})
+
+test('viewer change detection', () => {
+  expect(viewerChanged(null, 'admin')).toBe(true)
+  expect(viewerChanged('admin', null)).toBe(true)
+  expect(viewerChanged('admin', 'admin')).toBe(false)
+  expect(viewerChanged(null, null)).toBe(false)
+})
+test('guest success clears loginRequired', () => {
+  expect(loginRequiredAfterGuestSuccess()).toBe(false)
 })

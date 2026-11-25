@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../api'
 import { useAuth } from '../auth'
-import { restartLive } from '../live'
+import { safeRedirect } from '../router'
 
 const auth = useAuth()
 const router = useRouter()
+const route = useRoute()
 const username = ref('admin')
 const password = ref('')
 const error = ref('')
@@ -20,8 +21,7 @@ async function submit() {
   busy.value = true
   try {
     await auth.login(username.value.trim(), password.value)
-    restartLive()
-    await router.replace('/')
+    await router.replace(safeRedirect(route.query.redirect))
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : '登录失败，请重试'
   } finally {

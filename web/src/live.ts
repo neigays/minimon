@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { api } from './api'
 import { useAuth } from './auth'
 
@@ -76,6 +76,16 @@ export function liveUrl(loc: Pick<Location, 'protocol' | 'host'>): string {
 
 const RECONNECT_MS = 3000
 
+/** 登录身份是否在「已登录 / 访客」之间切换。服务端在 socket 建立时固定观看者身份，切换后必须重连。 */
+export function viewerChanged(prev: string | null, next: string | null): boolean {
+  return (prev === null) !== (next === null)
+}
+
+/** 访客成功连上 /api/live 或 /api/nodes 返回 200，说明站点当前不要求登录。 */
+export function loginRequiredAfterGuestSuccess(): boolean {
+  return false
+}
+
 // 全局单例：顶栏与各页面共用同一条实时连接。
 const nodes = ref<PublicNode[]>([])
 const connected = ref(false)
@@ -92,6 +102,7 @@ function connect() {
   ws = sock
   sock.onopen = () => {
     connected.value = true
+    if (!user.value) loginRequired.value = loginRequiredAfterGuestSuccess()
   }
   sock.onmessage = (ev) => {
     try {
@@ -109,6 +120,7 @@ function connect() {
     // 关闭可能是 server 要求登录：探测一次，401 会触发全局事件并置 loginRequired。
     try {
       await api('GET', '/api/nodes')
+      if (!user.value) loginRequired.value = loginRequiredAfterGuestSuccess()
     } catch {
       // 失败原因由 api 层处理
     }
@@ -135,6 +147,13 @@ export function restartLive() {
 export function useLive() {
   if (!started) {
     started = true
+    // 身份变化（登录、退出、会话过期）后清掉旧身份的数据并重连，避免继续持有/接收管理员视图。
+    watch(useAuth().user, (next, prev) => {
+      if (!viewerChanged(prev, next)) return
+      nodes.value = []
+      loaded.value = false
+      restartLive()
+    })
     setInterval(() => (now.value = Date.now()), 1000)
     connect()
   }

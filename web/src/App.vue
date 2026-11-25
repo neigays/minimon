@@ -3,7 +3,7 @@ import { computed, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuth } from './auth'
 import { useLive } from './live'
-import { guard } from './router'
+import { guard, loginLocation } from './router'
 import { theme, toggleTheme } from './theme'
 
 const route = useRoute()
@@ -18,12 +18,12 @@ const inAdmin = computed(() => route.path.startsWith('/admin'))
 // 会话失效或站点要求登录时，当前页面立即跳转登录页。
 watch([user, loginRequired], () => {
   const to = guard(route.path, user.value !== null, loginRequired.value)
-  if (to) void router.replace(to)
+  if (to) void router.replace(to === '/login' ? loginLocation(route.fullPath) : to)
 })
 
 async function logout() {
   await auth.logout().catch(() => undefined)
-  await router.replace('/login')
+  await router.replace('/login') // 身份变化的重连由 live.ts 监听 user 完成
 }
 </script>
 
