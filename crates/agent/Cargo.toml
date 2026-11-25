@@ -26,5 +26,8 @@ toml = "1.2.3"
 tracing = { workspace = true }
 tracing-subscriber = "0.3.23"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "net"] }

@@ -19,11 +19,31 @@ const UNAVAILABLE_TTL: Duration = Duration::from_secs(10 * 60);
 /// 样本发送间隔。
 const SAMPLE_GAP: Duration = Duration::from_millis(200);
 
-/// 记录 ICMP 是否不可用，避免每轮都重试建套接字。
+/// 建套接字阶段的失败分类。
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenErr {
+    /// DGRAM 与 RAW 都因权限/协议不支持而失败（值为 errno），按地址族缓存。
+    Unavailable(i32),
+    /// 目标不可达（connect 的 ENETUNREACH 等），只影响本次目标，不缓存。
+    Unreachable,
+    /// 其它瞬时错误（EMFILE、ENOBUFS 等），本轮失败，不缓存。
+    Transient,
+}
+
+#[cfg(unix)]
+type Sock = (tokio::io::unix::AsyncFd<socket2::Socket>, bool);
+#[cfg(unix)]
+type Opener = fn(std::net::IpAddr) -> Result<Sock, OpenErr>;
+
+/// 记录 ICMP 是否不可用（按 IPv4/IPv6 分别缓存），避免每轮都重试建套接字。
 pub struct IcmpState {
-    down_since: std::sync::Mutex<Option<std::time::Instant>>,
+    /// 下标 0 = IPv4，1 = IPv6
+    down_since: std::sync::Mutex<[Option<std::time::Instant>; 2]>,
     attempts: std::sync::atomic::AtomicU32,
     clock: fn() -> std::time::Instant,
+    #[cfg(unix)]
+    opener: Opener,
 }
 
 impl Default for IcmpState {
@@ -34,30 +54,58 @@ impl Default for IcmpState {
 
 impl IcmpState {
     pub fn new() -> Self {
-        Self::with_clock(std::time::Instant::now)
+        Self::build(
+            std::time::Instant::now,
+            #[cfg(unix)]
+            open,
+        )
     }
 
-    /// 可注入时钟（测试用）。
-    pub fn with_clock(clock: fn() -> std::time::Instant) -> Self {
+    fn build(clock: fn() -> std::time::Instant, #[cfg(unix)] opener: Opener) -> Self {
         Self {
-            down_since: std::sync::Mutex::new(None),
+            down_since: std::sync::Mutex::new([None, None]),
             attempts: std::sync::atomic::AtomicU32::new(0),
             clock,
+            #[cfg(unix)]
+            opener,
         }
     }
 
-    /// 标记不可用（从当前时钟起算 10 分钟）。
-    pub fn mark_unavailable(&self) {
-        *self.down_since.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.clock)());
+    /// 可注入时钟（测试用）。
+    #[cfg(test)]
+    pub(crate) fn with_clock(clock: fn() -> std::time::Instant) -> Self {
+        Self::build(
+            clock,
+            #[cfg(unix)]
+            open,
+        )
     }
 
-    /// 是否仍处于不可用缓存期内；过期则清除标记。
-    pub fn is_unavailable(&self) -> bool {
+    /// 可注入建套接字函数（测试用）。
+    #[cfg(all(test, unix))]
+    fn with_opener(opener: Opener) -> Self {
+        Self::build(std::time::Instant::now, opener)
+    }
+
+    /// 标记该地址族不可用（从当前时钟起算 10 分钟）。
+    /// 返回是否为新标记（此前未标记或已过期），用于只告警一次。
+    pub(crate) fn mark_unavailable(&self, v6: bool) -> bool {
         let mut g = self.down_since.lock().unwrap_or_else(|e| e.into_inner());
-        match *g {
+        let now = (self.clock)();
+        let fresh = !matches!(g[usize::from(v6)],
+            Some(t) if now.saturating_duration_since(t) < UNAVAILABLE_TTL);
+        g[usize::from(v6)] = Some(now);
+        fresh
+    }
+
+    /// 该地址族是否仍处于不可用缓存期内；过期则清除标记。
+    pub(crate) fn is_unavailable(&self, v6: bool) -> bool {
+        let mut g = self.down_since.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = &mut g[usize::from(v6)];
+        match *slot {
             Some(t) if (self.clock)().saturating_duration_since(t) < UNAVAILABLE_TTL => true,
             Some(_) => {
-                *g = None;
+                *slot = None;
                 false
             }
             None => false,
@@ -65,7 +113,8 @@ impl IcmpState {
     }
 
     /// 已进行的建套接字尝试次数。
-    pub fn attempts(&self) -> u32 {
+    #[cfg(test)]
+    pub(crate) fn attempts(&self) -> u32 {
         self.attempts.load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -152,12 +201,12 @@ pub async fn probe_icmp(
     timeout: Duration,
     state: &IcmpState,
 ) -> ProbeOutcome {
-    if state.is_unavailable() {
-        return unavailable();
-    }
     let Some(ip) = resolve_ip(target, timeout).await else {
         return super::resolve_failed(samples);
     };
+    if state.is_unavailable(ip.is_ipv6()) {
+        return unavailable();
+    }
     run(ip, samples, timeout, state).await
 }
 
@@ -185,7 +234,7 @@ async fn run(
     _timeout: Duration,
     state: &IcmpState,
 ) -> ProbeOutcome {
-    state.mark_unavailable();
+    state.mark_unavailable(_ip.is_ipv6());
     unavailable()
 }
 
@@ -201,11 +250,27 @@ async fn run(
     use super::{Fail, finish};
 
     state.note_attempt();
-    let Some((sock, dgram)) = open(ip) else {
-        state.mark_unavailable();
-        return unavailable();
-    };
     let v6 = ip.is_ipv6();
+    let (sock, dgram) = match (state.opener)(ip) {
+        Ok(s) => s,
+        Err(OpenErr::Unavailable(errno)) => {
+            if state.mark_unavailable(v6) {
+                // 不记录目标地址
+                tracing::warn!(
+                    family = if v6 { "IPv6" } else { "IPv4" },
+                    errno,
+                    "ICMP 不可用，10 分钟内不再重试；请检查 net.ipv4.ping_group_range 或授予 CAP_NET_RAW"
+                );
+            }
+            return unavailable();
+        }
+        Err(OpenErr::Unreachable) => {
+            return finish(&vec![None; samples as usize], &[Fail::Connect]);
+        }
+        Err(OpenErr::Transient) => {
+            return finish(&vec![None; samples as usize], &[Fail::Other]);
+        }
+    };
     let id: u16 = rand::random();
     let token: u64 = rand::random();
     let mut results = Vec::with_capacity(samples as usize);
@@ -226,15 +291,33 @@ async fn run(
         let pkt = build_echo_typed(if v6 { 128 } else { 8 }, id, seq, &payload, !v6);
         let t0 = Instant::now();
         last_send = Some(t0);
-        if send(&sock, &pkt).await.is_err() {
+        if let Err(e) = send(&sock, &pkt).await {
             results.push(None);
-            fails.push(Fail::Connect);
+            fails.push(if is_unreachable(&e) {
+                Fail::Connect
+            } else {
+                Fail::Other
+            });
             continue;
         }
+        // 连接套接字上 recv 报告的 ICMP 错误（如主机不可达）
+        let mut unreach_seen = false;
         let wait = async {
             let mut buf = [std::mem::MaybeUninit::<u8>::uninit(); 1500];
+            let mut errors = 0u32;
             loop {
-                let n = recv(&sock, &mut buf).await?;
+                let n = match recv(&sock, &mut buf).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        // 无关错误不终止本样本，继续等到超时；异常持续出现则放弃
+                        unreach_seen |= is_unreachable(&e);
+                        errors += 1;
+                        if errors > 100 {
+                            return Err(e);
+                        }
+                        continue;
+                    }
+                };
                 // SAFETY: recv 已初始化前 n 字节
                 let data: &[u8] = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast(), n) };
                 if let Some((s, body)) = parse_reply(data, v6, id, dgram)
@@ -253,34 +336,85 @@ async fn run(
             }
             Err(_) => {
                 results.push(None);
-                fails.push(Fail::Timeout);
+                fails.push(if unreach_seen {
+                    Fail::Connect
+                } else {
+                    Fail::Timeout
+                });
             }
         }
     }
     finish(&results, &fails)
 }
 
-/// 建套接字：DGRAM 优先，失败退回 RAW；已 connect 到目标并设为非阻塞。
+/// 不可达类错误：只影响当前目标。
+#[cfg(unix)]
+fn is_unreachable(e: &std::io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(
+            libc::ENETUNREACH
+                | libc::EHOSTUNREACH
+                | libc::EHOSTDOWN
+                | libc::ENETDOWN
+                | libc::EADDRNOTAVAIL
+                | libc::ECONNREFUSED
+        )
+    )
+}
+
+/// 建套接字失败是否属于「此环境不允许/不支持 ICMP」。
+#[cfg(unix)]
+fn is_permanent_open_error(e: &std::io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(
+            libc::EPERM
+                | libc::EACCES
+                | libc::EPROTONOSUPPORT
+                | libc::EAFNOSUPPORT
+                | libc::ESOCKTNOSUPPORT
+        )
+    )
+}
+
+/// 建套接字：DGRAM 优先，权限/协议类失败再退回 RAW；已 connect 到目标并设为非阻塞。
 /// 返回 `(套接字, 是否 DGRAM)`。
 #[cfg(unix)]
-fn open(ip: std::net::IpAddr) -> Option<(tokio::io::unix::AsyncFd<socket2::Socket>, bool)> {
+fn open(ip: std::net::IpAddr) -> Result<Sock, OpenErr> {
     use socket2::{Domain, Protocol, SockAddr, Socket, Type};
     let (domain, proto) = if ip.is_ipv4() {
         (Domain::IPV4, Protocol::ICMPV4)
     } else {
         (Domain::IPV6, Protocol::ICMPV6)
     };
+    let classify = |e: &std::io::Error| {
+        if is_permanent_open_error(e) {
+            OpenErr::Unavailable(e.raw_os_error().unwrap_or(0))
+        } else {
+            OpenErr::Transient
+        }
+    };
     let (sock, dgram) = match Socket::new(domain, Type::DGRAM, Some(proto)) {
         Ok(s) => (s, true),
-        // EPERM/EACCES/EPROTONOSUPPORT 等一律尝试 RAW
-        Err(_) => (Socket::new(domain, Type::RAW, Some(proto)).ok()?, false),
+        Err(e) if is_permanent_open_error(&e) => (
+            Socket::new(domain, Type::RAW, Some(proto)).map_err(|e| classify(&e))?,
+            false,
+        ),
+        Err(_) => return Err(OpenErr::Transient),
     };
-    sock.set_nonblocking(true).ok()?;
+    sock.set_nonblocking(true).map_err(|_| OpenErr::Transient)?;
     sock.connect(&SockAddr::from(std::net::SocketAddr::new(ip, 0)))
-        .ok()?;
+        .map_err(|e| {
+            if is_unreachable(&e) || e.raw_os_error() == Some(libc::EAFNOSUPPORT) {
+                OpenErr::Unreachable
+            } else {
+                OpenErr::Transient
+            }
+        })?;
     // SAFETY: AsyncFd 独占持有该套接字，期间不会被别处关闭；已设为非阻塞。
-    let fd = unsafe { tokio::io::unix::AsyncFd::register(sock) }.ok()?;
-    Some((fd, dgram))
+    let fd = unsafe { tokio::io::unix::AsyncFd::register(sock) }.map_err(|_| OpenErr::Transient)?;
+    Ok((fd, dgram))
 }
 
 #[cfg(unix)]
@@ -368,7 +502,7 @@ mod tests {
         let o = probe_icmp("127.0.0.1", 3, Duration::from_secs(2), &st).await;
         if o.error == Some("ICMP 不可用") {
             assert_eq!((o.sent, o.lost), (0, 0));
-            assert!(st.is_unavailable());
+            assert!(st.is_unavailable(false));
         } else {
             assert_eq!((o.sent, o.lost, o.error), (3, 0, None), "{o:?}");
             assert!(o.avg_ms.is_some());
@@ -385,7 +519,7 @@ mod tests {
     #[tokio::test]
     async fn unavailable_is_cached_for_10_minutes() {
         let st = IcmpState::with_clock(fake_clock);
-        st.mark_unavailable();
+        st.mark_unavailable(false);
         for off in [0, 60, 9 * 60] {
             OFFSET.store(off, Ordering::SeqCst);
             let o = probe_icmp("127.0.0.1", 5, Duration::from_millis(500), &st).await;
@@ -395,5 +529,82 @@ mod tests {
         OFFSET.store(10 * 60 + 1, Ordering::SeqCst);
         let _ = probe_icmp("127.0.0.1", 1, Duration::from_millis(500), &st).await;
         assert_eq!(st.attempts(), 1, "过期后应重新尝试");
+    }
+
+    #[cfg(unix)]
+    fn unreachable_opener(_: std::net::IpAddr) -> Result<Sock, OpenErr> {
+        Err(OpenErr::Unreachable)
+    }
+    #[cfg(unix)]
+    fn transient_opener(_: std::net::IpAddr) -> Result<Sock, OpenErr> {
+        Err(OpenErr::Transient)
+    }
+    #[cfg(unix)]
+    fn denied_opener(_: std::net::IpAddr) -> Result<Sock, OpenErr> {
+        Err(OpenErr::Unavailable(1))
+    }
+
+    #[tokio::test]
+    async fn v6_unavailable_does_not_block_v4() {
+        let st = IcmpState::new();
+        assert!(st.mark_unavailable(true));
+        assert!(
+            !st.mark_unavailable(true),
+            "缓存期内重复标记不再算新标记（不重复告警）"
+        );
+        let o = probe_icmp("::1", 2, Duration::from_millis(500), &st).await;
+        assert_eq!((o.sent, o.error), (0, Some("ICMP 不可用")));
+        assert_eq!(st.attempts(), 0, "v6 缓存期内不得尝试");
+        let _ = probe_icmp("127.0.0.1", 1, Duration::from_millis(500), &st).await;
+        assert_eq!(st.attempts(), 1, "v4 不受 v6 缓存影响");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreachable_is_connect_failure_not_cached() {
+        let st = IcmpState::with_opener(unreachable_opener);
+        let o = probe_icmp("::1", 3, Duration::from_millis(500), &st).await;
+        assert_eq!((o.sent, o.lost, o.error), (3, 3, Some("连接失败")));
+        assert!(!st.is_unavailable(true) && !st.is_unavailable(false));
+        // 下一轮仍会尝试
+        let _ = probe_icmp("::1", 1, Duration::from_millis(500), &st).await;
+        assert_eq!(st.attempts(), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn transient_open_error_is_probe_failure_not_cached() {
+        let st = IcmpState::with_opener(transient_opener);
+        let o = probe_icmp("127.0.0.1", 2, Duration::from_millis(500), &st).await;
+        assert_eq!((o.sent, o.lost, o.error), (2, 2, Some("探测失败")));
+        assert!(!st.is_unavailable(false));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permission_error_caches_only_its_family() {
+        let st = IcmpState::with_opener(denied_opener);
+        let o = probe_icmp("127.0.0.1", 2, Duration::from_millis(500), &st).await;
+        assert_eq!((o.sent, o.error), (0, Some("ICMP 不可用")));
+        assert!(st.is_unavailable(false) && !st.is_unavailable(true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn errno_classification() {
+        let e = |n| std::io::Error::from_raw_os_error(n);
+        assert!(is_unreachable(&e(libc::ENETUNREACH)));
+        assert!(is_unreachable(&e(libc::EHOSTUNREACH)));
+        assert!(!is_unreachable(&e(libc::EMFILE)));
+        for n in [
+            libc::EPERM,
+            libc::EACCES,
+            libc::EPROTONOSUPPORT,
+            libc::EAFNOSUPPORT,
+        ] {
+            assert!(is_permanent_open_error(&e(n)));
+        }
+        assert!(!is_permanent_open_error(&e(libc::EMFILE)));
+        assert!(!is_permanent_open_error(&e(libc::ENOBUFS)));
     }
 }
