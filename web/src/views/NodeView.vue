@@ -58,7 +58,14 @@ function onVisible() {
   if (document.visibilityState === 'visible') tick()
 }
 
-watch([range, id], () => load(true))
+watch([range, id], (_n, [, oldId]) => {
+  // 切换节点：立刻清掉上一个节点的数据与错误（含 notfound），避免短暂显示旧节点
+  if (oldId !== id.value) {
+    hist.value = null
+    err.value = null
+  }
+  void load(true)
+})
 onMounted(() => {
   void load(true)
   timer = setInterval(tick, 30_000)
@@ -70,7 +77,9 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisible)
 })
 
-const built = computed(() => (hist.value ? buildCharts(hist.value, node.value?.mem_total) : null))
+// memTotal 是原始值：live 推送替换 node 对象但数值不变时，built 不会重算，图表不会被重建。
+const memTotal = computed(() => node.value?.mem_total ?? null)
+const built = computed(() => (hist.value ? buildCharts(hist.value, memTotal.value) : null))
 const status = computed(() => (node.value ? statusOf(node.value, connected.value) : 'offline'))
 const r = computed(() => node.value?.latest ?? null)
 const dash = (s: string | null | undefined) => (s ? s : '—')

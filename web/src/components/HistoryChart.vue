@@ -2,7 +2,7 @@
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { formatValue, type ChartSeries, type Unit } from '../history'
+import { chartShape, formatValue, type ChartSeries, type Unit } from '../history'
 
 const props = defineProps<{ title: string; series: ChartSeries[]; ts: number[]; unit: Unit; max?: number }>()
 
@@ -11,6 +11,7 @@ const root = ref<HTMLDivElement>()
 const tip = ref<HTMLDivElement>()
 const tipText = ref('')
 let plot: uPlot | null = null
+let shape = ''
 let ro: ResizeObserver | null = null
 let mo: MutationObserver | null = null
 let mq: MediaQueryList | null = null
@@ -36,6 +37,20 @@ function tickLabel(sec: number, longSpan: boolean): string {
   const d = new Date(sec * 1000)
   const p = (n: number) => String(n).padStart(2, '0')
   return longSpan ? `${d.getMonth() + 1}/${d.getDate()}` : `${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** 任意 CSS 颜色（hex、rgb、命名色）转为带透明度的 rgba，借 canvas 解析。 */
+function withAlpha(color: string, a: number): string {
+  const ctx = document.createElement('canvas').getContext('2d')
+  if (!ctx) return color
+  ctx.fillStyle = '#000'
+  ctx.fillStyle = color
+  const v = ctx.fillStyle // 不透明为 #rrggbb，带透明度为 rgba(...)
+  if (/^#[0-9a-f]{6}$/i.test(v)) {
+    const n = parseInt(v.slice(1), 16)
+    return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`
+  }
+  return v
 }
 
 function timeLabel(sec: number): string {
@@ -85,7 +100,7 @@ function create() {
           stroke: color,
           width: 1.6,
           dash: s.dashed ? [4, 3] : undefined,
-          fill: props.series.length === 1 ? color + '1f' : undefined,
+          fill: props.series.length === 1 ? withAlpha(color, 0.12) : undefined,
           points: { show: false },
           spanGaps: false,
         } as uPlot.Series
@@ -115,6 +130,17 @@ function create() {
   }
   const data = [props.ts.map((t) => t / 1000), ...props.series.map((s) => s.values)] as uPlot.AlignedData
   plot = new uPlot(opts, data, el)
+  shape = chartShape(props.unit, props.max, props.series)
+}
+
+function dataArr(): uPlot.AlignedData {
+  return [props.ts.map((t) => t / 1000), ...props.series.map((s) => s.values)] as uPlot.AlignedData
+}
+
+/** 只有数据变化时 setData，形状（单位/上限/颜色/序列）变化才重建。 */
+function refresh() {
+  if (plot && shape === chartShape(props.unit, props.max, props.series)) plot.setData(dataArr())
+  else create()
 }
 
 function onTheme() {
@@ -140,7 +166,7 @@ onBeforeUnmount(() => {
   plot?.destroy()
   plot = null
 })
-watch(() => [props.ts, props.series, props.unit, props.max], create)
+watch(() => [props.ts, props.series, props.unit, props.max], refresh)
 </script>
 
 <template>

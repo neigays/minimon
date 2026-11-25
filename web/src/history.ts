@@ -134,3 +134,8 @@ export function toHistoryErr(e: unknown): HistoryErr {
   if (e instanceof ApiError) return historyError(e.status, e.message)
   return { kind: 'error', text: '加载失败' }
 }
+
+/** 图表「形状」：同一个值表示只有数据变化，可以 setData；不同则需要重建。 */
+export function chartShape(unit: Unit, max: number | undefined, series: ChartSeries[]): string {
+  return JSON.stringify([unit, max ?? null, series.map((s) => [s.name, s.color, !!s.dashed])])
+}

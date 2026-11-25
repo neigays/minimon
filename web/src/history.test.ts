@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { buildCharts, formatValue, historyError, medianStep, pctOf, stepFor, withGaps, type History } from './history'
+import { buildCharts, chartShape, formatValue, historyError, medianStep, pctOf, stepFor, withGaps, type History } from './history'
 
 describe('withGaps', () => {
   test('inserts null on gap', () => {
@@ -97,5 +97,20 @@ describe('buildCharts', () => {
     expect(ts.length).toBe(6)
     expect(charts[0].series[0].values[4]).toBeNull()
     expect(charts[5].series[1].values[4]).toBeNull()
+  })
+})
+
+describe('chartShape', () => {
+  const a = [{ name: 'CPU', values: [1, 2], color: 'var(--c1)' }]
+  test('same shape when only values change', () => {
+    expect(chartShape('pct', 100, a)).toBe(chartShape('pct', 100, [{ ...a[0], values: [9, 9, 9] }]))
+  })
+  test('differs on unit, max, color, dashed or names', () => {
+    const base = chartShape('pct', 100, a)
+    expect(chartShape('num', 100, a)).not.toBe(base)
+    expect(chartShape('pct', undefined, a)).not.toBe(base)
+    expect(chartShape('pct', 100, [{ ...a[0], color: 'var(--c2)' }])).not.toBe(base)
+    expect(chartShape('pct', 100, [{ ...a[0], dashed: true }])).not.toBe(base)
+    expect(chartShape('pct', 100, [{ ...a[0], name: 'x' }])).not.toBe(base)
   })
 })
