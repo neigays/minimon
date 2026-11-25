@@ -193,7 +193,9 @@ where
     let period = Duration::from_secs(u64::from(
         cfg.interval_override.unwrap_or(interval_secs).max(1),
     ));
-    let mut report_tick = interval_at(Instant::now() + period, period);
+    // 首次上报最迟 1 秒后：基线至少有 1 秒，CPU/速率才有意义；之后每 period 一次。
+    let first = period.min(Duration::from_secs(1));
+    let mut report_tick = interval_at(Instant::now() + first, period);
     report_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut ping_tick = interval(PING_INTERVAL);
     ping_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
