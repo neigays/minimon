@@ -390,6 +390,15 @@ impl Registry {
         }
     }
 
+    /// 仅当该连接仍是节点的当前会话时，在持有会话锁期间执行 `f`；否则返回 None。
+    /// 吊销（持写锁）与之互斥：吊销之后不会再有 `f` 执行。
+    pub fn with_owner<T>(&self, node_id: i64, conn_id: u64, f: impl FnOnce() -> T) -> Option<T> {
+        let map = self.sessions.read().unwrap_or_else(|e| e.into_inner());
+        map.get(&node_id)
+            .is_some_and(|s| s.conn_id == conn_id)
+            .then(f)
+    }
+
     /// 仅当 conn_id 匹配时移除并发布 Offline；返回是否真的移除了（被踢的旧连接返回 false）。
     pub fn disconnect(&self, node_id: i64, conn_id: u64) -> bool {
         let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
@@ -513,6 +522,19 @@ pub(crate) mod tests {
             evs.as_slice(),
             [LiveEvent::Online { .. }, LiveEvent::Offline { .. }]
         ));
+    }
+
+    #[tokio::test]
+    async fn with_owner_requires_current_session() {
+        let r = Registry::new(LiveHub::new());
+        let (c1, _k1, _o1) = r.connect(7, hello());
+        assert_eq!(r.with_owner(7, c1, || 1), Some(1));
+        assert_eq!(r.with_owner(8, c1, || 1), None);
+        let (c2, _k2, _o2) = r.connect(7, hello());
+        assert_eq!(r.with_owner(7, c1, || 1), None, "被替换的旧连接");
+        assert_eq!(r.with_owner(7, c2, || 2), Some(2));
+        r.revoke(7);
+        assert_eq!(r.with_owner(7, c2, || 2), None, "吊销后");
     }
 
     fn app_state() -> AppState {

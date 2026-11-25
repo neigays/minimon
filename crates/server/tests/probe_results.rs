@@ -324,3 +324,57 @@ async fn deleting_task_clears_latest() {
     let v: Value = serde_json::from_str(&guest_nodes(&f).await).unwrap();
     assert!(v[0]["probes"].as_array().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn card_affecting_task_edits_resync_live_clients() {
+    let f = start(|_| {}).await;
+    let ck = login(f.port).await;
+    add_node(&f, &ck).await;
+    let task = add_task(&f, &ck, 0, true, true).await;
+    let mut g = live(f.port).await;
+    assert_eq!(next_json(&mut g).await["type"], "snapshot");
+    // 依次改名、改 show_on_card、再删除：每次都要有新的快照反映当前卡片。
+    let steps: [(&str, Option<Value>, usize, Option<&str>); 3] = [
+        ("PATCH", Some(json!({"name": "新名"})), 1, Some("新名")),
+        ("PATCH", Some(json!({"show_on_card": false})), 0, None),
+        ("DELETE", Some(json!({})), 0, None),
+    ];
+    for (method, body, n, name) in steps {
+        api(&f, &ck, method, &format!("/api/admin/probes/{task}"), body).await;
+        let snap = loop {
+            let m = next_json(&mut g).await;
+            if m["type"] == "snapshot" {
+                break m;
+            }
+        };
+        let probes = snap["nodes"][0]["probes"].as_array().unwrap().clone();
+        assert_eq!(probes.len(), n, "{snap}");
+        if let Some(name) = name {
+            assert_eq!(probes[0]["name"], name);
+        }
+    }
+}
+
+#[tokio::test]
+async fn result_after_node_deleted_is_dropped() {
+    let f = start(|_| {}).await;
+    let ck = login(f.port).await;
+    let (id, token) = add_node(&f, &ck).await;
+    let task = add_task(&f, &ck, 0, true, true).await;
+    let mut ws = agent(f.port, &token).await;
+    api(
+        &f,
+        &ck,
+        "DELETE",
+        &format!("/api/admin/nodes/{id}"),
+        Some(json!({})),
+    )
+    .await;
+    // 节点已删：旧连接上还在途的结果不得再进入最新值缓存。
+    send_result(&mut ws, result(task, None)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(f.state.latest_probe(id).iter().all(|p| p.avg_ms.is_none()));
+    let path = f.db_path.clone();
+    let _dir = f.stop().await;
+    assert_eq!(raw_count(&path), 0);
+}

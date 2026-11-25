@@ -20,6 +20,8 @@ pub(crate) fn spawn(state: AppState, mut shutdown: watch::Receiver<bool>) -> Joi
     let raw_ms = i64::from(cfg.retention_raw_hours) * HOUR_MS;
     let m1_ms = i64::from(cfg.retention_1m_days) * DAY_MS;
     let m15_ms = i64::from(cfg.retention_15m_days) * DAY_MS;
+    let probe_raw_ms = i64::from(cfg.retention_probe_raw_hours) * HOUR_MS;
+    let probe_5m_ms = i64::from(cfg.retention_probe_5m_days) * DAY_MS;
     tokio::spawn(async move {
         loop {
             if *shutdown.borrow() {
@@ -31,16 +33,20 @@ pub(crate) fn spawn(state: AppState, mut shutdown: watch::Receiver<bool>) -> Joi
                 let stats = db.rollup(now, ROLLUP_LAG_MS, BATCH_NODES)?;
                 let pruned = db.prune(now, raw_ms, m1_ms, m15_ms)?;
                 let sessions = db.prune_sessions(now)?;
-                Ok::<_, crate::db::DbError>((stats, pruned, sessions))
+                let probe5 = db.rollup_probes(now, ROLLUP_LAG_MS, BATCH_NODES)?;
+                let probe_pruned = db.prune_probes(now, probe_raw_ms, probe_5m_ms)?;
+                Ok::<_, crate::db::DbError>((stats, pruned, sessions, probe5, probe_pruned))
             })
             .await;
             match round {
-                Ok(Ok((stats, pruned, sessions))) => {
+                Ok(Ok((stats, pruned, sessions, probe5, probe_pruned))) => {
                     tracing::debug!(
                         m1 = stats.m1,
                         m15 = stats.m15,
                         pruned,
                         sessions,
+                        probe5,
+                        probe_pruned,
                         "rollup 完成"
                     );
                 }

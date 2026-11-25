@@ -11,6 +11,7 @@ mod live;
 pub mod period;
 pub mod probe;
 mod probe_api;
+mod probe_history;
 mod rollup;
 pub mod state;
 pub mod traffic;
@@ -39,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/nodes", get(live::nodes))
         .route("/api/live", get(live::ws))
         .route("/api/nodes/{id}/history", get(history::get))
+        .route("/api/nodes/{id}/probes", get(probe_history::get))
         .merge(auth_api::routes())
         .merge(admin::routes())
         .merge(probe_api::routes())

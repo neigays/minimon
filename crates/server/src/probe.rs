@@ -172,7 +172,7 @@ impl AppState {
     }
 }
 
-fn applies(t: &ProbeTaskRow, node_id: i64) -> bool {
+pub(crate) fn applies(t: &ProbeTaskRow, node_id: i64) -> bool {
     t.all_nodes || t.node_ids.contains(&node_id)
 }
 

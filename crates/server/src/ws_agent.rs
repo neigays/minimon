@@ -314,7 +314,14 @@ async fn run(
                         }
                         Ok(AgentMsg::ProbeResult(r)) => {
                             let task_id = r.task_id;
-                            if !state.accept_probe_result(node_id, r, now_ms()) {
+                            // 会话已被吊销或替换时，在途结果一律丢弃（不写最新值、不发事件、不入库）。
+                            let accepted = state
+                                .registry()
+                                .with_owner(node_id, conn_id, || {
+                                    state.accept_probe_result(node_id, r, now_ms())
+                                })
+                                .unwrap_or(false);
+                            if !accepted {
                                 tracing::debug!(node_id, task_id, "丢弃无效或不属于该节点的探测结果");
                             }
                         }

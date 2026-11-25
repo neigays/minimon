@@ -5,6 +5,7 @@ mod last_report;
 mod metrics;
 pub mod nodes;
 pub mod probe;
+pub mod probe_rollup;
 pub mod rollup;
 mod traffic;
 
@@ -17,6 +18,7 @@ use std::time::Duration;
 pub use aggregate::ROLLUP_LAG_MS;
 pub use nodes::{Node, NodePatch, TrafficMode};
 pub use probe::{NewProbeTask, ProbeTaskPatch, ProbeTaskRow};
+pub use probe_rollup::{ProbeGranularity, ProbeSeries};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
