@@ -24,6 +24,8 @@ struct Url {
 }
 
 fn parse_url(url: &str) -> Option<Url> {
+    // 片段不会发给服务端
+    let url = url.split('#').next().unwrap_or(url);
     let (https, rest) = if let Some(r) = url.strip_prefix("https://") {
         (true, r)
     } else {
@@ -204,6 +206,10 @@ mod tests {
         assert_eq!(u.host_header, "example.com:8443");
         let u = parse_url("http://example.com?x=1").unwrap();
         assert_eq!(u.path, "/?x=1");
+        let u = parse_url("http://example.com/a?q=1#frag").unwrap();
+        assert_eq!(u.path, "/a?q=1");
+        let u = parse_url("http://example.com#frag").unwrap();
+        assert_eq!((u.host.as_str(), u.path.as_str()), ("example.com", "/"));
     }
 
     #[test]

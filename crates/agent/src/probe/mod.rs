@@ -1,9 +1,10 @@
-//! 探测调度：按任务周期执行 TCP/HTTP（ICMP 暂为占位）探测，经 mpsc 交付结果。
+//! 探测调度：按任务周期执行 TCP/HTTP/ICMP 探测，经 mpsc 交付结果。
 //!
 //! agent 只发起出站连接，不执行任何外部命令。错误文案只使用固定短语，
 //! 绝不带上目标地址（server 会对访客隐藏 target）。
 
 mod http;
+mod icmp;
 mod tcp;
 
 use std::collections::HashMap;
@@ -16,6 +17,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 pub use http::probe_http;
+pub use icmp::{IcmpState, probe_icmp};
 pub use tcp::probe_tcp;
 
 /// 全局并发探测上限。
@@ -103,20 +105,12 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-async fn run_once(task: &ProbeTask) -> ProbeOutcome {
+async fn run_once(task: &ProbeTask, icmp: &IcmpState) -> ProbeOutcome {
     let timeout = Duration::from_millis(u64::from(task.timeout_ms));
     match task.kind {
         ProbeKind::Tcp => probe_tcp(&task.target, task.samples, timeout).await,
         ProbeKind::Http => probe_http(&task.target, task.samples, timeout).await,
-        // Task 9 替换为真实实现
-        ProbeKind::Icmp => ProbeOutcome {
-            sent: 0,
-            lost: 0,
-            avg_ms: None,
-            min_ms: None,
-            max_ms: None,
-            error: Some(ERR_ICMP),
-        },
+        ProbeKind::Icmp => probe_icmp(&task.target, task.samples, timeout, icmp).await,
     }
 }
 
@@ -124,6 +118,7 @@ fn task_loop(
     task: ProbeTask,
     tx: mpsc::Sender<ProbeResult>,
     sem: Arc<Semaphore>,
+    icmp: Arc<IcmpState>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let period = Duration::from_secs(u64::from(task.interval_secs.max(1)));
@@ -137,7 +132,7 @@ fn task_loop(
                 return;
             };
             let ts_ms = now_ms();
-            let o = run_once(&task).await;
+            let o = run_once(&task, &icmp).await;
             next += period;
             while next <= tokio::time::Instant::now() {
                 next += period;
@@ -165,6 +160,7 @@ fn task_loop(
 pub struct ProbeScheduler {
     tx: mpsc::Sender<ProbeResult>,
     sem: Arc<Semaphore>,
+    icmp: Arc<IcmpState>,
     tasks: HashMap<i64, (ProbeTask, JoinHandle<()>)>,
 }
 
@@ -173,6 +169,7 @@ impl ProbeScheduler {
         Self {
             tx: results,
             sem: Arc::new(Semaphore::new(MAX_CONCURRENCY)),
+            icmp: Arc::new(IcmpState::new()),
             tasks: HashMap::new(),
         }
     }
@@ -180,16 +177,31 @@ impl ProbeScheduler {
     /// 全量替换：删除的任务取消，参数不变的任务保持原节奏，新增或变更的任务重新起调度。
     pub fn replace(&mut self, tasks: Vec<ProbeTask>) {
         let mut old = std::mem::take(&mut self.tasks);
+        // 同 id 重复时最后一个生效，避免覆盖 map 项而遗留无法取消的 JoinHandle
+        let mut by_id: HashMap<i64, ProbeTask> = HashMap::new();
         for t in tasks {
+            by_id.insert(t.id, t);
+        }
+        for t in by_id.into_values() {
             let entry = match old.remove(&t.id) {
                 Some((prev, h)) if prev == t => (prev, h),
                 Some((_, h)) => {
                     h.abort();
-                    let h = task_loop(t.clone(), self.tx.clone(), self.sem.clone());
+                    let h = task_loop(
+                        t.clone(),
+                        self.tx.clone(),
+                        self.sem.clone(),
+                        self.icmp.clone(),
+                    );
                     (t.clone(), h)
                 }
                 None => {
-                    let h = task_loop(t.clone(), self.tx.clone(), self.sem.clone());
+                    let h = task_loop(
+                        t.clone(),
+                        self.tx.clone(),
+                        self.sem.clone(),
+                        self.icmp.clone(),
+                    );
                     (t.clone(), h)
                 }
             };

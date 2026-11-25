@@ -184,7 +184,7 @@ async fn scheduler_skips_overlapping_rounds() {
         conns += 1;
     }
     // 首次延迟 d∈[0,1s) + 一轮 2.5s：第 2 轮最早在 d+3s 开始；若会并发则 d+1s 就有第 2 个连接
-    assert!(conns <= 1, "conns={conns}");
+    assert_eq!(conns, 1, "conns={conns}");
     s.shutdown();
     drop(rx);
 }
@@ -197,18 +197,35 @@ async fn scheduler_keeps_unchanged_task_cadence() {
     let mut s = ProbeScheduler::new(tx);
     let t = tcp_task(1, &addr, 1);
     s.replace(vec![t.clone()]);
-    rx.recv().await.unwrap();
-    let t0 = Instant::now();
+    let first = rx.recv().await.unwrap();
     // 相同参数再次下发：不重启，下一结果应在 ~1s 后而非 [0,1s) 随机延迟后重新开始
     s.replace(vec![t]);
-    rx.recv().await.unwrap();
-    let dt = t0.elapsed();
-    assert!(dt > Duration::from_millis(700), "dt={dt:?}");
+    let second = rx.recv().await.unwrap();
+    let dt = second.ts_ms - first.ts_ms;
+    assert!((800..=1300).contains(&dt), "dt={dt}ms");
     s.shutdown();
 }
 
 #[tokio::test]
-async fn icmp_placeholder_reports_unavailable() {
+async fn scheduler_dedupes_duplicate_task_ids() {
+    let (l, addr) = listener().await;
+    tokio::spawn(async move { while l.accept().await.is_ok() {} });
+    let (tx, mut rx) = mpsc::channel(64);
+    let mut s = ProbeScheduler::new(tx);
+    s.replace(vec![tcp_task(5, &addr, 1), tcp_task(5, &addr, 1)]);
+    s.replace(vec![]);
+    // 若遗留了无法取消的任务，移除后仍会有结果
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    while rx.try_recv().is_ok() {}
+    assert!(
+        tokio::time::timeout(Duration::from_millis(2200), rx.recv())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn scheduler_runs_icmp_task() {
     let (tx, mut rx) = mpsc::channel(4);
     let mut s = ProbeScheduler::new(tx);
     let mut t = tcp_task(3, "127.0.0.1", 1);
@@ -218,6 +235,10 @@ async fn icmp_placeholder_reports_unavailable() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!((r.sent, r.error.as_deref()), (0, Some("ICMP 不可用")));
+    // 环境允许时真实探测成功；否则必须是精确的「不可用」，不得伪造丢包
+    match r.error.as_deref() {
+        Some(e) => assert_eq!((e, r.sent, r.lost), ("ICMP 不可用", 0, 0)),
+        None => assert_eq!((r.sent, r.lost), (1, 0)),
+    }
     s.shutdown();
 }
