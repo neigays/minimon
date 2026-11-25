@@ -13,7 +13,7 @@ use sysinfo::{
     ProcessesToUpdate, RefreshKind, System,
 };
 
-use filter::{is_counted_fs, is_counted_iface};
+use filter::{iface_selected, is_counted_fs};
 use rate::RateTracker;
 use tracing::warn;
 
@@ -23,6 +23,7 @@ pub struct Collector {
     disks: Option<Disks>,
     nets: Option<Networks>,
     rate: RateTracker,
+    iface_include: Vec<String>,
     /// load_average / uptime 失败只告警一次，避免每个上报周期刷屏。
     warned_runtime: bool,
 }
@@ -57,8 +58,15 @@ impl Collector {
             disks,
             nets,
             rate: RateTracker::new(),
+            iface_include: Vec::new(),
             warned_runtime: false,
         }
+    }
+
+    /// 非空时只统计指定网卡，覆盖默认排除规则。
+    pub fn with_iface_include(mut self, include: Vec<String>) -> Self {
+        self.iface_include = include;
+        self
     }
 
     /// (已用, 总量)，仅统计计入的文件系统，并按设备名去重。
@@ -133,7 +141,7 @@ impl Collector {
             .nets
             .iter()
             .flat_map(|n| n.iter())
-            .filter(|(name, _)| is_counted_iface(&name.to_string_lossy()))
+            .filter(|(name, _)| iface_selected(&name.to_string_lossy(), &self.iface_include))
             .fold((0u64, 0u64), |(r, t), (_, d)| {
                 (r + d.total_received(), t + d.total_transmitted())
             });

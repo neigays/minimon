@@ -6,6 +6,19 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive", "env"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 minimon-common = { workspace = true }
+rand = "0.10.4"
+serde.workspace = true
+serde_json.workspace = true
 sysinfo = { workspace = true }
+tokio = { version = "1.54.1", features = ["rt", "macros", "time", "signal", "net", "sync"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+toml = "1.2.3"
 tracing = { workspace = true }
+tracing-subscriber = "0.3.23"
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "net"] }

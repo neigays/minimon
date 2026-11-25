@@ -10,6 +10,15 @@ pub fn is_counted_iface(name: &str) -> bool {
         && !IFACE_EXCLUDE_PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
+/// 网卡是否计入：`include` 非空时只计入列表内的网卡（覆盖默认排除规则），否则用默认规则。
+pub fn iface_selected(name: &str, include: &[String]) -> bool {
+    if include.is_empty() {
+        is_counted_iface(name)
+    } else {
+        include.iter().any(|i| i == name)
+    }
+}
+
 /// 该文件系统类型的分区是否计入磁盘汇总。
 pub fn is_counted_fs(fs_type: &str) -> bool {
     !matches!(
@@ -40,6 +49,16 @@ mod tests {
         for n in ["eth0", "ens3", "enp1s0", "wlan0", "en0"] {
             assert!(is_counted_iface(n), "{n}");
         }
+    }
+
+    #[test]
+    fn iface_include_overrides_default() {
+        let inc = vec!["docker0".to_string(), "eth0".to_string()];
+        assert!(iface_selected("docker0", &inc));
+        assert!(iface_selected("eth0", &inc));
+        assert!(!iface_selected("eth1", &inc));
+        assert!(iface_selected("eth1", &[]));
+        assert!(!iface_selected("lo", &[]));
     }
 
     #[test]
