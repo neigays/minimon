@@ -12,6 +12,9 @@ use super::{Db, DbError};
 
 use super::aggregate::bucket_start;
 
+/// prune 每个事务处理的节点数。
+const PRUNE_BATCH_NODES: usize = 10;
+
 // ---------------------------------------------------------------- DB 胶水
 
 const AGG_COLS: &str = "node_id, ts_ms, samples, cpu, mem_used, swap_used, disk_used, disk_total, \
@@ -141,25 +144,11 @@ fn rollup_raw_node(conn: &Connection, node_id: i64, end: i64) -> Result<usize, D
         stmt.query_map(params![node_id, lo, end], raw_from_row)?
             .collect::<Result<_, _>>()?
     };
-    let Some(first) = samples.first() else {
+    if samples.is_empty() {
         return Ok(0);
-    };
-    let prev = match last {
-        Some(r) => Some((r.net_rx_bytes, r.net_tx_bytes)),
-        None => conn
-            .query_row(
-                "SELECT net_rx_bytes, net_tx_bytes FROM metrics_raw \
-                 WHERE node_id = ?1 AND ts_ms < ?2 ORDER BY ts_ms DESC LIMIT 1",
-                params![node_id, first.ts_ms],
-                |r| {
-                    Ok((
-                        r.get::<_, Option<i64>>(0)?.unwrap_or(0),
-                        r.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                    ))
-                },
-            )
-            .optional()?,
-    };
+    }
+    // 无 1m 行时 lo 不设下限，samples 已含全部 raw，不存在更早的样本：首个增量记为 0。
+    let prev = last.map(|r| (r.net_rx_bytes, r.net_tx_bytes));
     let rows = aggregate_raw(node_id, prev, &samples, MINUTE_MS);
     write_agg(conn, "metrics_1m", &rows)?;
     Ok(rows.len())
@@ -218,6 +207,9 @@ impl Db {
     }
 
     /// 按保留期删除过期数据，返回删除的总行数。
+    ///
+    /// 表主键为 (node_id, ts_ms)，没有 ts_ms 索引；按节点删除才能走主键范围，
+    /// 避免全表扫描占住写连接。节点 id 包含已不在 nodes 表中的残留数据。
     pub fn prune(
         &self,
         now_ms: i64,
@@ -225,22 +217,51 @@ impl Db {
         m1_ms: i64,
         m15_ms: i64,
     ) -> Result<usize, DbError> {
-        self.write(|c| {
-            let tx = c.transaction()?;
-            let mut n = 0;
-            for (table, keep) in [
-                ("metrics_raw", raw_ms),
-                ("metrics_1m", m1_ms),
-                ("metrics_15m", m15_ms),
-            ] {
-                n += tx.execute(
-                    &format!("DELETE FROM {table} WHERE ts_ms < ?1"),
-                    [now_ms - keep],
-                )?;
-            }
-            tx.commit()?;
-            Ok(n)
-        })
+        let ids: Vec<i64> = self.read(|c| {
+            // 递归 CTE 做松散索引扫描：每个 node_id 只探一次索引。
+            let mut stmt = c.prepare(
+                "WITH RECURSIVE \
+                 a(n) AS (SELECT MIN(node_id) FROM metrics_raw UNION ALL \
+                          SELECT (SELECT MIN(node_id) FROM metrics_raw WHERE node_id > a.n) \
+                          FROM a WHERE n IS NOT NULL), \
+                 b(n) AS (SELECT MIN(node_id) FROM metrics_1m UNION ALL \
+                          SELECT (SELECT MIN(node_id) FROM metrics_1m WHERE node_id > b.n) \
+                          FROM b WHERE n IS NOT NULL), \
+                 c(n) AS (SELECT MIN(node_id) FROM metrics_15m UNION ALL \
+                          SELECT (SELECT MIN(node_id) FROM metrics_15m WHERE node_id > c.n) \
+                          FROM c WHERE n IS NOT NULL) \
+                 SELECT n FROM a WHERE n IS NOT NULL \
+                 UNION SELECT n FROM b WHERE n IS NOT NULL \
+                 UNION SELECT n FROM c WHERE n IS NOT NULL \
+                 UNION SELECT id FROM nodes ORDER BY 1",
+            )?;
+            Ok(stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<_, _>>()?)
+        })?;
+        let mut total = 0;
+        for chunk in ids.chunks(PRUNE_BATCH_NODES) {
+            total += self.write(|c| {
+                let tx = c.transaction()?;
+                let mut n = 0;
+                for &id in chunk {
+                    for (table, keep) in [
+                        ("metrics_raw", raw_ms),
+                        ("metrics_1m", m1_ms),
+                        ("metrics_15m", m15_ms),
+                    ] {
+                        n += tx
+                            .prepare_cached(&format!(
+                                "DELETE FROM {table} WHERE node_id = ?1 AND ts_ms < ?2"
+                            ))?
+                            .execute(params![id, now_ms - keep])?;
+                    }
+                }
+                tx.commit()?;
+                Ok(n)
+            })?;
+        }
+        Ok(total)
     }
 }
 
@@ -413,17 +434,103 @@ mod tests {
         }
     }
 
-    #[test]
-    fn catch_up_commits_per_batch() {
+    /// 3 个节点、各 1 小时 raw（cpu 值互不相同）；节点 id 由 add_node 分配。
+    fn three_node_db() -> (Db, Vec<i64>) {
         let db = Db::open_in_memory().expect("db");
+        let mut ids = Vec::new();
         for i in 0..3 {
-            db.add_node(&format!("n{i}")).expect("node");
+            let (n, _) = db.add_node(&format!("n{i}")).expect("node");
+            ids.push(n.id);
         }
-        // 无数据也应正常按批次运行
-        assert_eq!(
-            db.rollup(10 * MIN, ROLLUP_LAG_MS, 1).expect("rollup"),
-            RollupStats::default()
-        );
+        db.write(|c| {
+            let tx = c.transaction()?;
+            for (i, id) in ids.iter().enumerate() {
+                let mut t = 0;
+                while t < 60 * MIN {
+                    tx.execute(
+                        "INSERT INTO metrics_raw (node_id, ts_ms, cpu, mem_used, net_rx_bytes, \
+                         net_tx_bytes) VALUES (?1, ?2, ?3, 100, ?4, 0)",
+                        params![id, t, 10.0 * (i as f64 + 1.0), t / 1000],
+                    )?;
+                    t += 5_000;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .expect("seed");
+        (db, ids)
+    }
+
+    fn dump(db: &Db, table: &str) -> Vec<(i64, i64, i64, f64, i64)> {
+        db.read(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT node_id, ts_ms, samples, cpu, net_rx_delta FROM {table} \
+                 ORDER BY node_id, ts_ms"
+            ))?;
+            Ok(stmt
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })?
+                .collect::<Result<_, _>>()?)
+        })
+        .expect("dump")
+    }
+
+    #[test]
+    fn batch_of_one_equals_batch_of_many() {
+        let now = 60 * MIN + ROLLUP_LAG_MS;
+        let (a, ids) = three_node_db();
+        let (b, _) = three_node_db();
+        let sa = a.rollup(now, ROLLUP_LAG_MS, 1).expect("batch 1");
+        let sb = b.rollup(now, ROLLUP_LAG_MS, 50).expect("batch 50");
+        assert_eq!(sa, sb);
+        assert_eq!(sa, RollupStats { m1: 180, m15: 12 });
+        let (d1, d15) = (dump(&a, "metrics_1m"), dump(&a, "metrics_15m"));
+        assert_eq!(d1, dump(&b, "metrics_1m"));
+        assert_eq!(d15, dump(&b, "metrics_15m"));
+        for (i, id) in ids.iter().enumerate() {
+            let m1: Vec<_> = d1.iter().filter(|r| r.0 == *id).collect();
+            let m15: Vec<_> = d15.iter().filter(|r| r.0 == *id).collect();
+            assert_eq!((m1.len(), m15.len()), (60, 4));
+            assert!((m1[0].3 - 10.0 * (i as f64 + 1.0)).abs() < 1e-9);
+            assert!((m15[3].3 - 10.0 * (i as f64 + 1.0)).abs() < 1e-9);
+            assert_eq!(m1[0].2, 12);
+            assert_eq!(m15[0].2, 180);
+            // 首桶无 prev：11 个相邻差；之后每桶 12 个
+            assert_eq!((m1[0].4, m1[1].4), (55, 60));
+        }
+    }
+
+    #[test]
+    fn prune_covers_orphaned_nodes() {
+        let db = Db::open_in_memory().expect("db");
+        let now = 1_000_000_000i64;
+        // 99 不在 nodes 表中
+        db.write(|c| {
+            for table in ["metrics_raw", "metrics_1m", "metrics_15m"] {
+                for t in [now - 10_000, now - 10] {
+                    let extra = if table == "metrics_raw" {
+                        ""
+                    } else {
+                        ", samples"
+                    };
+                    let val = if table == "metrics_raw" { "" } else { ", 1" };
+                    c.execute(
+                        &format!(
+                            "INSERT INTO {table} (node_id, ts_ms{extra}) VALUES (99, {t}{val})"
+                        ),
+                        [],
+                    )?;
+                }
+            }
+            Ok(())
+        })
+        .expect("seed");
+        assert_eq!(db.prune(now, 1000, 1000, 1000).expect("prune"), 3);
+        for t in ["metrics_raw", "metrics_1m", "metrics_15m"] {
+            assert_eq!(count(&db, t), 1, "{t}");
+        }
     }
 
     #[test]
