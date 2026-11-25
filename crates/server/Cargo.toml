@@ -4,3 +4,21 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+
+[dependencies]
+anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive", "env"] }
+minimon-common = { workspace = true }
+rand = "0.10.4"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+rusqlite_migration = "2.9.0"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+toml = "1.2.3"
+tracing.workspace = true
+tracing-subscriber = "0.3.23"
+
+[dev-dependencies]
+tempfile = "3.27.0"
