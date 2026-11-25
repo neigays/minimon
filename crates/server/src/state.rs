@@ -2,6 +2,8 @@
 
 use crate::config::ServerConfig;
 use crate::db::Db;
+pub use crate::ingest::IngestHandle;
+use crate::ingest::{DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH, IngestJoin};
 use minimon_common::protocol::{Hello, Report};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,15 +22,19 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(db: Arc<Db>, cfg: ServerConfig) -> Self {
+    /// 创建状态并启动入库线程；`IngestJoin` 交给负责关停的一方（`serve_on`）。
+    pub fn new(db: Arc<Db>, cfg: ServerConfig) -> (Self, IngestJoin) {
         let live = LiveHub::new();
-        AppState {
+        let (ingest, join) =
+            IngestHandle::spawn(db.clone(), DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH);
+        let state = AppState {
             db,
             registry: Registry::new(live.clone()),
             live,
-            ingest: IngestHandle,
+            ingest,
             cfg: Arc::new(cfg),
-        }
+        };
+        (state, join)
     }
 
     pub fn registry(&self) -> &Registry {
@@ -152,18 +158,8 @@ impl LiveHub {
     }
 }
 
-/// 入库句柄。Task 6 替换为真正的批量写入；目前丢弃数据。
-#[derive(Clone)]
-pub struct IngestHandle;
-
-impl IngestHandle {
-    pub fn push(&self, node_id: i64, report: Report) {
-        let _ = (node_id, report);
-    }
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn hello() -> Hello {
@@ -218,7 +214,7 @@ mod tests {
         ));
     }
 
-    pub(super) fn report() -> Report {
+    pub(crate) fn report() -> Report {
         Report {
             ts_ms: 1,
             cpu: 0.0,

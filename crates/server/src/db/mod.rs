@@ -1,3 +1,4 @@
+mod metrics;
 pub mod nodes;
 
 use rusqlite::{Connection, OpenFlags};
