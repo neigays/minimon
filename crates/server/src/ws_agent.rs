@@ -1,11 +1,12 @@
 //! `GET /api/agent/ws`：agent 接入。
 
 use crate::state::AppState;
-use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use minimon_common::protocol::{AgentMsg, ErrorCode, Hello, ServerMsg, check_version};
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::{Instant, MissedTickBehavior, interval, timeout};
@@ -27,9 +28,11 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 
 pub async fn handler(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let ip = crate::auth::client_ip(&headers, peer, state.cfg.real_ip_header.as_deref());
     let token = bearer(&headers);
     let node_id = match token {
         Some(t) => {
@@ -62,7 +65,7 @@ pub async fn handler(
         .on_upgrade(move |socket| async move {
             let _guard = guard;
             match node_id {
-                Some(id) => session(state, id, socket).await,
+                Some(id) => session(state, id, ip, socket).await,
                 None => {
                     let mut socket = socket;
                     reject(&mut socket, ErrorCode::Unauthorized, "token 无效").await;
@@ -150,7 +153,7 @@ async fn read_hello(socket: &mut WebSocket) -> Result<Hello, HelloError> {
     }
 }
 
-async fn session(state: AppState, node_id: i64, mut socket: WebSocket) {
+async fn session(state: AppState, node_id: i64, ip: std::net::IpAddr, mut socket: WebSocket) {
     let hello = match read_hello(&mut socket).await {
         Ok(h) => h,
         Err(HelloError::IncompatibleVersion) => {
@@ -175,8 +178,21 @@ async fn session(state: AppState, node_id: i64, mut socket: WebSocket) {
     {
         let db = state.db.clone();
         let info = hello.clone();
-        match tokio::task::spawn_blocking(move || db.save_node_info(node_id, &info)).await {
-            Ok(Ok(())) => {}
+        let ip_s = ip.to_string();
+        let saved = tokio::task::spawn_blocking(move || {
+            db.save_node_info(node_id, &info)?;
+            db.set_node_ip(node_id, &ip_s)
+        })
+        .await;
+        match saved {
+            Ok(Ok(())) => {
+                // 同步缓存：离线后视图仍能给出最近的 Hello 与 IP。
+                let (h, ip_s) = (hello.clone(), ip.to_string());
+                state.modify_node(node_id, move |n| {
+                    n.info = Some(h);
+                    n.last_ip = Some(ip_s);
+                });
+            }
             Ok(Err(e)) => tracing::warn!(node_id, error = %e, "保存节点信息失败"),
             Err(e) => tracing::warn!(node_id, error = %e, "保存节点信息任务失败"),
         }

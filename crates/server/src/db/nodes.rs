@@ -121,6 +121,16 @@ impl Db {
         })
     }
 
+    pub fn set_node_ip(&self, id: i64, ip: &str) -> Result<(), DbError> {
+        self.write(|c| {
+            c.execute(
+                "UPDATE nodes SET last_ip = ?1 WHERE id = ?2",
+                params![ip, id],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn save_node_info(&self, id: i64, hello: &Hello) -> Result<(), DbError> {
         let json = serde_json::to_string(hello)?;
         self.write(|c| {
@@ -234,6 +244,21 @@ mod tests {
             ("", "", "")
         );
         assert!(got.last_ip.is_none() && got.last_seen_ms.is_none() && got.created_ms > 0);
+    }
+
+    #[test]
+    fn set_ip_and_last_seen_via_insert() {
+        let db = Db::open_in_memory().unwrap();
+        let (n, _) = db.add_node("a").unwrap();
+        db.set_node_ip(n.id, "1.2.3.4").unwrap();
+        let mut r = crate::state::tests::report();
+        r.ts_ms = 500;
+        db.insert_reports(&[(n.id, r.clone())]).unwrap();
+        r.ts_ms = 300;
+        db.insert_reports(&[(n.id, r)]).unwrap();
+        let got = &db.list_nodes().unwrap()[0];
+        assert_eq!(got.last_ip.as_deref(), Some("1.2.3.4"));
+        assert_eq!(got.last_seen_ms, Some(500));
     }
 
     #[test]

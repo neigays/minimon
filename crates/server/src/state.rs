@@ -6,7 +6,7 @@ pub use crate::ingest::IngestHandle;
 use crate::ingest::{DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH, IngestJoin};
 use minimon_common::protocol::{Hello, Report};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Notify, broadcast, oneshot, watch};
 
@@ -28,6 +28,9 @@ pub struct AppState {
     live: LiveHub,
     /// 节点列表缓存；启动时加载，运行中遇到未知节点时由 `reload_nodes` 刷新。
     nodes: Arc<RwLock<Arc<Vec<Node>>>>,
+    /// 每节点最后一条已知上报（在线与离线都用它）；启动时从库恢复。
+    last_known: LastKnown,
+    require_login: Arc<AtomicBool>,
     pub(crate) ingest: IngestHandle,
     pub(crate) cfg: Arc<ServerConfig>,
     shutdown: Arc<watch::Sender<bool>>,
@@ -60,13 +63,18 @@ impl AppState {
     pub fn new(db: Arc<Db>, cfg: ServerConfig) -> Result<(Self, IngestJoin), StateError> {
         let nodes = Arc::new(RwLock::new(Arc::new(db.list_nodes()?)));
         let live = LiveHub::new();
+        let last_known: LastKnown = Arc::new(RwLock::new(db.last_reports()?));
+        // 缺省（未设置）表示关闭。
+        let require_login = db.get_setting("require_login")?.as_deref() == Some("1");
         let (ingest, join) =
             IngestHandle::spawn(db.clone(), DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH)?;
         let state = AppState {
             db,
-            registry: Registry::new(live.clone()),
+            registry: Registry::with_last_known(live.clone(), last_known.clone()),
             live,
             nodes,
+            last_known,
+            require_login: Arc::new(AtomicBool::new(require_login)),
             ingest,
             cfg: Arc::new(cfg),
             shutdown: Arc::new(watch::channel(false).0),
@@ -80,6 +88,38 @@ impl AppState {
     /// 当前节点缓存快照（锁只在克隆 Arc 期间持有）。
     pub(crate) fn nodes(&self) -> Arc<Vec<Node>> {
         self.nodes.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 原地修改缓存中的某个节点（写时复制，读者持有的旧快照不受影响）。
+    pub(crate) fn modify_node(&self, id: i64, f: impl FnOnce(&mut Node)) {
+        let mut guard = self.nodes.write().unwrap_or_else(|e| e.into_inner());
+        let mut list = Vec::clone(&guard);
+        if let Some(n) = list.iter_mut().find(|n| n.id == id) {
+            f(n);
+            *guard = Arc::new(list);
+        }
+    }
+
+    /// 最后已知上报的快照副本。
+    pub(crate) fn last_known(&self) -> HashMap<i64, Report> {
+        self.last_known
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// 整站登录是否开启。
+    pub fn require_login(&self) -> bool {
+        self.require_login.load(Ordering::SeqCst)
+    }
+
+    pub fn set_require_login(&self, on: bool) {
+        self.require_login.store(on, Ordering::SeqCst);
+    }
+
+    /// 要求所有 live 会话按当前身份与设置重新同步（重发快照或关闭）。
+    pub fn publish_resync(&self) {
+        self.live.publish(LiveEvent::Resync);
     }
 
     /// 缓存中是否已有该节点。
@@ -134,6 +174,8 @@ impl AppState {
     }
 }
 
+type LastKnown = Arc<RwLock<HashMap<i64, Report>>>;
+
 struct Session {
     conn_id: u64,
     latest: Option<Report>,
@@ -147,14 +189,20 @@ struct Session {
 #[derive(Clone)]
 pub struct Registry {
     live: LiveHub,
+    last_known: LastKnown,
     sessions: Arc<RwLock<HashMap<i64, Session>>>,
     next_conn: Arc<AtomicU64>,
 }
 
 impl Registry {
     pub fn new(live: LiveHub) -> Self {
+        Self::with_last_known(live, Arc::default())
+    }
+
+    fn with_last_known(live: LiveHub, last_known: LastKnown) -> Self {
         Registry {
             live,
+            last_known,
             sessions: Arc::default(),
             next_conn: Arc::default(),
         }
@@ -185,6 +233,11 @@ impl Registry {
         match map.get_mut(&node_id) {
             Some(s) if s.conn_id == conn_id => {
                 s.latest = Some(report.clone());
+                // 与事件同在会话锁内更新，视图读到的 latest 不会落后于已发布的事件。
+                self.last_known
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(node_id, report.clone());
                 self.live.publish(LiveEvent::Report { node_id, report });
                 true
             }
@@ -219,9 +272,18 @@ impl Registry {
 
 #[derive(Debug, Clone)]
 pub enum LiveEvent {
-    Online { node_id: i64 },
-    Offline { node_id: i64 },
-    Report { node_id: i64, report: Report },
+    Online {
+        node_id: i64,
+    },
+    Offline {
+        node_id: i64,
+    },
+    Report {
+        node_id: i64,
+        report: Report,
+    },
+    /// 可见性或整站登录设置变化：订阅者应重新同步。
+    Resync,
 }
 
 #[derive(Clone)]

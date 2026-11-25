@@ -7,6 +7,7 @@ mod ingest;
 mod live;
 mod rollup;
 pub mod state;
+mod views;
 mod web;
 mod ws_agent;
 

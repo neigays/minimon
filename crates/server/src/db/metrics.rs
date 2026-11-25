@@ -42,6 +42,18 @@ impl Db {
                     ])?;
                 }
             }
+            // 同事务内推进 last_seen_ms（每节点取批内最大 ts）。
+            let mut newest: std::collections::HashMap<i64, i64> = Default::default();
+            for (node_id, r) in rows {
+                let e = newest.entry(*node_id).or_insert(r.ts_ms);
+                *e = (*e).max(r.ts_ms);
+            }
+            for (node_id, ts) in newest {
+                tx.prepare_cached(
+                    "UPDATE nodes SET last_seen_ms = max(coalesce(last_seen_ms, 0), ?1) WHERE id = ?2",
+                )?
+                .execute(params![ts, node_id])?;
+            }
             tx.commit()?;
             Ok(rows.len())
         })

@@ -17,12 +17,12 @@ const PRUNE_BATCH_NODES: usize = 10;
 
 // ---------------------------------------------------------------- DB 胶水
 
-const AGG_COLS: &str = "node_id, ts_ms, samples, cpu, mem_used, swap_used, disk_used, disk_total, \
+pub(super) const AGG_COLS: &str = "node_id, ts_ms, samples, cpu, mem_used, swap_used, disk_used, disk_total, \
      net_rx_rate, net_tx_rate, load1, load5, load15, process_count, tcp_count, udp_count, \
      cpu_max, mem_used_max, net_rx_rate_max, net_tx_rate_max, net_rx_delta, net_tx_delta, \
      net_rx_bytes, net_tx_bytes, uptime_secs";
 
-fn agg_from_row(r: &Row<'_>) -> rusqlite::Result<AggRow> {
+pub(super) fn agg_from_row(r: &Row<'_>) -> rusqlite::Result<AggRow> {
     let f = |i: usize| -> rusqlite::Result<f64> { Ok(r.get::<_, Option<f64>>(i)?.unwrap_or(0.0)) };
     let n = |i: usize| -> rusqlite::Result<i64> { Ok(r.get::<_, Option<i64>>(i)?.unwrap_or(0)) };
     Ok(AggRow {
@@ -54,11 +54,11 @@ fn agg_from_row(r: &Row<'_>) -> rusqlite::Result<AggRow> {
     })
 }
 
-const RAW_COLS: &str = "ts_ms, cpu, mem_used, swap_used, disk_used, disk_total, net_rx_bytes, \
+pub(super) const RAW_COLS: &str = "ts_ms, cpu, mem_used, swap_used, disk_used, disk_total, net_rx_bytes, \
      net_tx_bytes, net_rx_rate, net_tx_rate, load1, load5, load15, uptime_secs, process_count, \
      tcp_count, udp_count";
 
-fn raw_from_row(r: &Row<'_>) -> rusqlite::Result<RawSample> {
+pub(super) fn raw_from_row(r: &Row<'_>) -> rusqlite::Result<RawSample> {
     let f = |i: usize| -> rusqlite::Result<f64> { Ok(r.get::<_, Option<f64>>(i)?.unwrap_or(0.0)) };
     let n = |i: usize| -> rusqlite::Result<i64> { Ok(r.get::<_, Option<i64>>(i)?.unwrap_or(0)) };
     Ok(RawSample {

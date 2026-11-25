@@ -1,16 +1,15 @@
-//! 公开只读视图：`GET /api/nodes` 与 `GET /api/live`（WebSocket）。
-//!
-//! 隐私：`PublicNode` 逐字段从 Hello 取值，绝不直接序列化 Hello
-//! （hostname / kernel 等不得出现在任何公开输出里）。
+//! `GET /api/nodes` 与 `GET /api/live`（WebSocket）：按身份输出视图（见 `views`）。
 
+use crate::auth::Viewer;
+use crate::error::ApiError;
 use crate::state::{AppState, LiveEvent};
+use crate::views::{self, NodeList};
 use axum::Json;
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use minimon_common::protocol::Report;
 use serde::Serialize;
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::timeout;
@@ -19,72 +18,49 @@ use tokio::time::timeout;
 const LIVE_MAX_MSG: usize = 4 << 10;
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone, Serialize)]
-pub struct PublicNode {
-    pub id: i64,
-    pub name: String,
-    pub online: bool,
-    pub sort: i64,
-    pub os: Option<String>,
-    pub arch: Option<String>,
-    pub cpu_cores: Option<u32>,
-    pub mem_total: Option<u64>,
-    pub swap_total: Option<u64>,
-    pub disk_total: Option<u64>,
-    pub latest: Option<Report>,
-}
-
 /// 发给浏览器的实时消息。
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum LiveMsg {
-    Snapshot { nodes: Vec<PublicNode> },
+    Snapshot { nodes: NodeList },
     Report { node_id: i64, report: Report },
     Online { node_id: i64 },
     Offline { node_id: i64 },
 }
 
-/// 当前可见（非 hidden）节点的公开视图，按 (sort, id) 排序（缓存已按此排序）。
-fn public_nodes(state: &AppState) -> Vec<PublicNode> {
-    let online: HashMap<i64, Option<Report>> = state.registry().snapshot().into_iter().collect();
-    let nodes = state.nodes();
-    nodes
-        .iter()
-        .filter(|n| !n.hidden)
-        .map(|n| {
-            // 在线时优先用本次连接的最新 Hello，否则用库里保存的。
-            let info = state.registry().info(n.id).or_else(|| n.info.clone());
-            let live = online.get(&n.id);
-            PublicNode {
-                id: n.id,
-                name: n.name.clone(),
-                online: live.is_some(),
-                sort: n.sort,
-                os: info.as_ref().map(|h| h.os.clone()),
-                arch: info.as_ref().map(|h| h.arch.clone()),
-                cpu_cores: info.as_ref().map(|h| h.cpu_cores),
-                mem_total: info.as_ref().map(|h| h.mem_total),
-                swap_total: info.as_ref().map(|h| h.swap_total),
-                disk_total: info.as_ref().map(|h| h.disk_total),
-                latest: live.cloned().flatten(),
-            }
-        })
-        .collect()
+/// 整站登录开启时访客不得读取任何节点数据。
+fn gate(state: &AppState, viewer: &Viewer) -> Result<(), ApiError> {
+    if matches!(viewer, Viewer::Guest) && state.require_login() {
+        return Err(ApiError::unauthorized("请先登录"));
+    }
+    Ok(())
 }
 
-pub async fn nodes(State(state): State<AppState>) -> Json<Vec<PublicNode>> {
-    Json(public_nodes(&state))
+pub async fn nodes(State(state): State<AppState>, viewer: Viewer) -> Result<Response, ApiError> {
+    gate(&state, &viewer)?;
+    Ok(match viewer {
+        Viewer::Admin { .. } => Json(views::admin_nodes(&state)).into_response(),
+        Viewer::Guest => Json(views::public_nodes(&state)).into_response(),
+    })
 }
 
-pub async fn ws(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+pub async fn ws(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    // 升级前拒绝：访客在整站登录开启时直接 401。
+    gate(&state, &viewer)?;
+    let admin = matches!(viewer, Viewer::Admin { .. });
     // guard 在 upgrade 之前取得，停机时不会漏掉刚接入的会话。
     let guard = state.session_guard();
-    ws.max_message_size(LIVE_MAX_MSG)
+    Ok(ws
+        .max_message_size(LIVE_MAX_MSG)
         .max_frame_size(LIVE_MAX_MSG)
         .on_upgrade(move |socket| async move {
             let _guard = guard;
-            session(state, socket).await;
-        })
+            session(state, admin, socket).await;
+        }))
 }
 
 async fn send(socket: &mut WebSocket, msg: &LiveMsg) -> bool {
@@ -97,51 +73,78 @@ async fn send(socket: &mut WebSocket, msg: &LiveMsg) -> bool {
     )
 }
 
-async fn send_snapshot(state: &AppState, socket: &mut WebSocket) -> bool {
-    let nodes = public_nodes(state);
+async fn send_snapshot(state: &AppState, admin: bool, socket: &mut WebSocket) -> bool {
+    let nodes = views::nodes_for(state, admin);
     send(socket, &LiveMsg::Snapshot { nodes }).await
 }
 
-/// 事件转消息；缓存中不存在或 hidden 的节点返回 None。
-fn to_msg(state: &AppState, ev: LiveEvent) -> Option<LiveMsg> {
+/// 事件转消息；缓存中不存在的节点、访客看不到的隐藏节点返回 None。
+fn to_msg(state: &AppState, admin: bool, ev: LiveEvent) -> Option<LiveMsg> {
     let id = match &ev {
         LiveEvent::Online { node_id }
         | LiveEvent::Offline { node_id }
         | LiveEvent::Report { node_id, .. } => *node_id,
+        LiveEvent::Resync => return None,
     };
-    if !state.nodes().iter().any(|n| n.id == id && !n.hidden) {
+    if !state
+        .nodes()
+        .iter()
+        .any(|n| n.id == id && (admin || !n.hidden))
+    {
         return None;
     }
     Some(match ev {
         LiveEvent::Online { node_id } => LiveMsg::Online { node_id },
         LiveEvent::Offline { node_id } => LiveMsg::Offline { node_id },
         LiveEvent::Report { node_id, report } => LiveMsg::Report { node_id, report },
+        LiveEvent::Resync => return None,
     })
 }
 
-async fn session(state: AppState, mut socket: WebSocket) {
+async fn close_normal(socket: &mut WebSocket) {
+    let frame = CloseFrame {
+        code: 1000,
+        reason: "".into(),
+    };
+    let _ = timeout(SEND_TIMEOUT, socket.send(Message::Close(Some(frame)))).await;
+}
+
+/// 重新同步：访客在整站登录开启后被关闭，其余重发当前身份的快照。返回会话是否继续。
+async fn resync(state: &AppState, admin: bool, socket: &mut WebSocket) -> bool {
+    if !admin && state.require_login() {
+        close_normal(socket).await;
+        return false;
+    }
+    send_snapshot(state, admin, socket).await
+}
+
+async fn session(state: AppState, admin: bool, mut socket: WebSocket) {
     let mut shutdown = state.shutdown_rx();
     // 先订阅再取快照：二者之间发生的事件不会丢（可能重复，前端幂等）。
     let mut rx = state.live().subscribe();
-    if !send_snapshot(&state, &mut socket).await {
+    if !resync(&state, admin, &mut socket).await {
         return;
     }
     loop {
         tokio::select! {
             _ = async { let _ = shutdown.wait_for(|v| *v).await; } => {
-                let frame = CloseFrame { code: 1000, reason: "".into() };
-                let _ = timeout(SEND_TIMEOUT, socket.send(Message::Close(Some(frame)))).await;
+                close_normal(&mut socket).await;
                 return;
             }
             ev = rx.recv() => match ev {
+                Ok(LiveEvent::Resync) => {
+                    if !resync(&state, admin, &mut socket).await {
+                        return;
+                    }
+                }
                 Ok(ev) => {
-                    if let Some(msg) = to_msg(&state, ev) && !send(&mut socket, &msg).await {
+                    if let Some(msg) = to_msg(&state, admin, ev) && !send(&mut socket, &msg).await {
                         return;
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
                     tracing::debug!(skipped = n, "live 订阅滞后，重发快照");
-                    if !send_snapshot(&state, &mut socket).await {
+                    if !resync(&state, admin, &mut socket).await {
                         return;
                     }
                 }

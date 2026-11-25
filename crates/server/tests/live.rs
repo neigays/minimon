@@ -187,6 +187,13 @@ async fn public_node_has_no_hostname() {
 async fn disconnected_node_shows_offline() {
     let f = start(1, |_| {}).await;
     let mut a = agent(f.port, &f.tokens[0].1).await;
+    send(&mut a, &AgentMsg::Report(report(5.0))).await;
+    for _ in 0..50 {
+        if http_get(f.port, "/api/nodes").await.1.contains("\"cpu\"") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     a.close(None).await.unwrap();
     drop(a);
     let mut body = String::new();
@@ -198,6 +205,9 @@ async fn disconnected_node_shows_offline() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(body.contains("\"online\":false"), "{body}");
+    // 最后已知数据：离线后保留 latest（M2 语义）。
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v[0]["latest"]["cpu"], 5.0, "{body}");
 }
 
 #[tokio::test]
@@ -288,12 +298,17 @@ async fn public_output_key_allowlist() {
         "name",
         "online",
         "sort",
+        "group",
+        "region",
         "os",
         "arch",
+        "cpu_model",
         "cpu_cores",
+        "virtualization",
         "mem_total",
         "swap_total",
         "disk_total",
+        "last_seen_ms",
         "latest",
     ]);
     let report_keys = sorted(&[

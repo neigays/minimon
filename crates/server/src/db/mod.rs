@@ -1,5 +1,6 @@
 mod aggregate;
 pub mod auth;
+mod last_report;
 mod metrics;
 pub mod nodes;
 pub mod rollup;
