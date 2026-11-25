@@ -18,6 +18,7 @@ pub enum StateError {
     Ingest(#[from] std::io::Error),
 }
 
+const HASH_CONCURRENCY: usize = 2;
 const LIVE_CAPACITY: usize = 256;
 
 #[derive(Clone)]
@@ -32,6 +33,8 @@ pub struct AppState {
     shutdown: Arc<watch::Sender<bool>>,
     sessions: Arc<SessionTracker>,
     pub(crate) login_limiter: Arc<crate::auth::LoginLimiter>,
+    /// 限制并发 argon2 哈希 / 校验数（每个约 19 MiB）。
+    pub(crate) hash_gate: Arc<tokio::sync::Semaphore>,
 }
 
 /// 活跃 WS 会话计数。upgrade 后的连接不受 axum 优雅停机管理，需自行等待。
@@ -69,6 +72,7 @@ impl AppState {
             shutdown: Arc::new(watch::channel(false).0),
             sessions: Arc::default(),
             login_limiter: Arc::default(),
+            hash_gate: Arc::new(tokio::sync::Semaphore::new(HASH_CONCURRENCY)),
         };
         Ok((state, join))
     }

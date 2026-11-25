@@ -80,43 +80,46 @@ impl LoginLimiter {
         self.fails.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// 返回 true 表示允许尝试。
-    pub fn check(&self, ip: IpAddr) -> bool {
-        self.check_at(ip, Instant::now())
-    }
-
-    pub fn fail(&self, ip: IpAddr) {
-        self.fail_at(ip, Instant::now());
+    /// 原子地检查并占位：未达上限则记一次失败并返回 true（允许本次尝试），否则返回 false。
+    /// 校验成功后调用 `clear` 清零。检查与记录在同一把锁内完成，并发请求无法突破上限。
+    pub fn try_reserve(&self, ip: IpAddr) -> bool {
+        self.try_reserve_at(ip, Instant::now())
     }
 
     pub fn clear(&self, ip: IpAddr) {
         self.map().remove(&ip);
     }
 
-    fn check_at(&self, ip: IpAddr, now: Instant) -> bool {
+    fn try_reserve_at(&self, ip: IpAddr, now: Instant) -> bool {
         let mut m = self.map();
-        let Some(v) = m.get_mut(&ip) else {
-            return true;
-        };
-        v.retain(|t| now.saturating_duration_since(*t) < LIMIT_WINDOW);
-        if v.is_empty() {
-            m.remove(&ip);
+        let alive = |t: &Instant| now.saturating_duration_since(*t) < LIMIT_WINDOW;
+        if let Some(v) = m.get_mut(&ip) {
+            v.retain(alive);
+            if v.len() >= LIMIT_FAILS {
+                return false;
+            }
+            v.push(now);
             return true;
         }
-        v.len() < LIMIT_FAILS
-    }
-
-    fn fail_at(&self, ip: IpAddr, now: Instant) {
-        let mut m = self.map();
         if m.len() >= LIMIT_MAX_IPS {
             m.retain(|_, v| {
-                v.retain(|t| now.saturating_duration_since(*t) < LIMIT_WINDOW);
+                v.retain(alive);
                 !v.is_empty()
             });
         }
-        if m.len() < LIMIT_MAX_IPS || m.contains_key(&ip) {
-            m.entry(ip).or_default().push(now);
+        if m.len() >= LIMIT_MAX_IPS {
+            // 仍然满：淘汰最后一次失败最早的条目，保证新 IP 一定被跟踪（不会失效放行）。
+            let oldest = m
+                .iter()
+                .filter_map(|(k, v)| v.last().map(|t| (*k, *t)))
+                .min_by_key(|(_, t)| *t)
+                .map(|(k, _)| k);
+            if let Some(k) = oldest {
+                m.remove(&k);
+            }
         }
+        m.insert(ip, vec![now]);
+        true
     }
 }
 
@@ -311,13 +314,12 @@ mod tests {
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
         let other: IpAddr = "1.2.3.5".parse().unwrap();
         for _ in 0..5 {
-            assert!(l.check(ip));
-            l.fail(ip);
+            assert!(l.try_reserve(ip));
         }
-        assert!(!l.check(ip));
-        assert!(l.check(other));
+        assert!(!l.try_reserve(ip));
+        assert!(l.try_reserve(other));
         l.clear(ip);
-        assert!(l.check(ip));
+        assert!(l.try_reserve(ip));
     }
 
     #[test]
@@ -326,11 +328,46 @@ mod tests {
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
         let t0 = Instant::now();
         for _ in 0..5 {
-            l.fail_at(ip, t0);
+            assert!(l.try_reserve_at(ip, t0));
         }
-        assert!(!l.check_at(ip, t0 + LIMIT_WINDOW - Duration::from_secs(1)));
-        assert!(l.check_at(ip, t0 + LIMIT_WINDOW));
-        assert!(l.map().is_empty());
+        assert!(!l.try_reserve_at(ip, t0 + LIMIT_WINDOW - Duration::from_secs(1)));
+        assert!(l.try_reserve_at(ip, t0 + LIMIT_WINDOW));
+    }
+
+    #[test]
+    fn limiter_concurrent_reserve_is_exact() {
+        let l = std::sync::Arc::new(LoginLimiter::default());
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let handles: Vec<_> = (0..32)
+            .map(|_| {
+                let l = l.clone();
+                std::thread::spawn(move || l.try_reserve(ip))
+            })
+            .collect();
+        let ok = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|b| *b)
+            .count();
+        assert_eq!(ok, LIMIT_FAILS);
+    }
+
+    #[test]
+    fn limiter_full_map_still_tracks_new_ip() {
+        let l = LoginLimiter::default();
+        let t0 = Instant::now();
+        for i in 0..LIMIT_MAX_IPS as u32 {
+            let ip = IpAddr::from(std::net::Ipv4Addr::from(i + 1));
+            assert!(l.try_reserve_at(ip, t0 + Duration::from_millis(u64::from(i))));
+        }
+        assert_eq!(l.map().len(), LIMIT_MAX_IPS);
+        let now = t0 + Duration::from_secs(10);
+        let newcomer: IpAddr = "250.0.0.1".parse().unwrap();
+        for _ in 0..LIMIT_FAILS {
+            assert!(l.try_reserve_at(newcomer, now));
+        }
+        assert!(!l.try_reserve_at(newcomer, now));
+        assert!(l.map().len() <= LIMIT_MAX_IPS);
     }
 
     #[test]

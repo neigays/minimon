@@ -299,3 +299,30 @@ async fn malformed_json_is_json_error() {
     assert_eq!(code, 400);
     err_of(&body);
 }
+
+#[tokio::test]
+async fn concurrent_logins_all_succeed() {
+    let fx = start(|_| {}).await;
+    let port = fx.port;
+    let tasks: Vec<_> = (0..4)
+        .map(|_| tokio::spawn(async move { do_login(port, ADMIN_PASSWORD).await.0 }))
+        .collect();
+    for t in tasks {
+        assert_eq!(t.await.unwrap(), 200);
+    }
+}
+
+#[tokio::test]
+async fn concurrent_wrong_passwords_capped_at_five() {
+    let fx = start(|_| {}).await;
+    let port = fx.port;
+    let tasks: Vec<_> = (0..12)
+        .map(|_| tokio::spawn(async move { do_login(port, "nope-nope").await.0 }))
+        .collect();
+    let mut codes = Vec::new();
+    for t in tasks {
+        codes.push(t.await.unwrap());
+    }
+    assert_eq!(codes.iter().filter(|c| **c == 401).count(), 5, "{codes:?}");
+    assert_eq!(codes.iter().filter(|c| **c == 429).count(), 7, "{codes:?}");
+}

@@ -65,6 +65,24 @@ async fn blocking<T: Send + 'static>(
     }
 }
 
+/// argon2 每次约占 19 MiB：先拿许可再进阻塞线程池，许可持有到任务结束，限制并发内存。
+async fn hashing<T: Send + 'static>(
+    st: &AppState,
+    f: impl FnOnce() -> Result<T, crate::db::DbError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let permit = st
+        .hash_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal())?;
+    blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
+}
+
 fn too_many() -> ApiError {
     ApiError::new(StatusCode::TOO_MANY_REQUESTS, "尝试次数过多，请稍后再试")
 }
@@ -81,17 +99,15 @@ async fn login(
     let real = st.cfg.real_ip_header.as_deref();
     let ip = client_ip(&headers, peer, real);
     let secure = is_https(&headers, real);
-    if !st.login_limiter.check(ip) {
+    // 检查与占位在同一把锁内完成，成功后清零；并发猜测也不能突破次数上限。
+    if !st.login_limiter.try_reserve(ip) {
         return Err(too_many());
     }
-    // 先记一次失败再校验（中间无 await，检查与占位原子），成功后清零；
-    // 这样并发猜测也不能突破次数上限。
-    st.login_limiter.fail(ip);
     if req.password.len() > MAX_PASSWORD_BYTES {
         return Err(ApiError::unauthorized(MSG_BAD_CREDENTIALS));
     }
     let db = st.db.clone();
-    let ok = blocking(move || db.verify_admin(&req.username, &req.password)).await?;
+    let ok = hashing(&st, move || db.verify_admin(&req.username, &req.password)).await?;
     if !ok {
         return Err(ApiError::unauthorized(MSG_BAD_CREDENTIALS));
     }
@@ -142,17 +158,16 @@ async fn change_password(
     }
     // 旧密码校验与登录共用限流，防止被盗会话用来猜密码。
     let ip = client_ip(&headers, peer, st.cfg.real_ip_header.as_deref());
-    if !st.login_limiter.check(ip) {
+    if !st.login_limiter.try_reserve(ip) {
         return Err(too_many());
     }
-    st.login_limiter.fail(ip);
     if req.old_password.is_empty() || req.old_password.len() > MAX_PASSWORD_BYTES {
         return Err(ApiError::bad_request("原密码错误"));
     }
     let db = st.db.clone();
     let new = req.new_password;
     let old = req.old_password;
-    let changed = blocking(move || {
+    let changed = hashing(&st, move || {
         let name = db.admin_username()?;
         if !db.verify_admin(&name, &old)? {
             return Ok(false);
