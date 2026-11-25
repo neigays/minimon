@@ -223,3 +223,58 @@ async fn isp_template_pushes_to_online_nodes() {
     .await;
     assert_eq!(tasks(&mut ws).await.len(), 1);
 }
+
+#[tokio::test]
+async fn rapid_changes_coalesce_to_latest_list() {
+    let f = start(|_| {}).await;
+    let ck = login(f.port).await;
+    let (_, token) = add_node(&f, &ck, "a").await;
+    let mut ws = agent(f.port, &token).await;
+    assert!(tasks(&mut ws).await.is_empty());
+    // 连续变更并直接多次打脏标记，不读 agent 端。
+    for i in 0..12 {
+        api(
+            &f,
+            &ck,
+            "POST",
+            "/api/admin/probes",
+            Some(task_body(&format!("t{i}"), true, &[])),
+        )
+        .await;
+        f.state.dispatch_probe_tasks(None);
+    }
+    // 读到静默为止：数量单调不减，且最后一帧是完整的最新列表。
+    let mut last = 0;
+    while let Some(ServerMsg::ProbeTasks { tasks }) = next(&mut ws, Duration::from_secs(1)).await {
+        assert!(tasks.len() >= last, "不应在新列表之后收到旧列表");
+        last = tasks.len();
+    }
+    assert_eq!(last, 12);
+}
+
+#[tokio::test]
+async fn name_only_patch_sends_nothing() {
+    let f = start(|_| {}).await;
+    let ck = login(f.port).await;
+    let (_, token) = add_node(&f, &ck, "a").await;
+    let t = api(
+        &f,
+        &ck,
+        "POST",
+        "/api/admin/probes",
+        Some(task_body("t", true, &[])),
+    )
+    .await;
+    let id = t["id"].as_i64().unwrap();
+    let mut ws = agent(f.port, &token).await;
+    assert_eq!(tasks(&mut ws).await.len(), 1);
+    api(
+        &f,
+        &ck,
+        "PATCH",
+        &format!("/api/admin/probes/{id}"),
+        Some(json!({"name": "x", "show_on_card": false, "sort": 5})),
+    )
+    .await;
+    assert!(next(&mut ws, Duration::from_secs(1)).await.is_none());
+}

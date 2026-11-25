@@ -44,9 +44,15 @@ impl FromRequestParts<AppState> for TaskId {
 }
 
 /// 重载缓存、通知管理页并向受影响的在线节点下发（`None` 为全部在线节点）。
-async fn refresh(state: &AppState, affected: Option<Vec<i64>>) -> Result<(), ApiError> {
+async fn refresh(
+    state: &AppState,
+    affected: Option<Vec<i64>>,
+    dispatch: bool,
+) -> Result<(), ApiError> {
     state.reload_probe_tasks().await?;
-    state.dispatch_probe_tasks(affected);
+    if dispatch {
+        state.dispatch_probe_tasks(affected);
+    }
     state.publish_resync();
     Ok(())
 }
@@ -239,7 +245,7 @@ async fn create(
     };
     let db = state.db.clone();
     let row = blocking(move || db.create_probe_task(&new)).await?;
-    refresh(&state, affected(false, &[], all_nodes, &row.node_ids)).await?;
+    refresh(&state, affected(false, &[], all_nodes, &row.node_ids), true).await?;
     Ok((StatusCode::CREATED, Json(row)))
 }
 
@@ -281,6 +287,14 @@ async fn update(
         let ids = validate_nodes(&state, ids)?;
         req.node_ids.is_some().then_some(ids)
     };
+    // ProbeTask 不含 name / show_on_card / sort：只改这些时无需打扰 agent。
+    let agent_relevant = req.kind.is_some()
+        || req.target.is_some()
+        || req.interval_secs.is_some()
+        || req.samples.is_some()
+        || req.timeout_ms.is_some()
+        || req.all_nodes.is_some()
+        || req.node_ids.is_some();
     let affected = affected(
         cur.all_nodes,
         &cur.node_ids,
@@ -303,7 +317,7 @@ async fn update(
     if !blocking(move || db.update_probe_task(id, &patch)).await? {
         return Err(ApiError::not_found(MSG_NO_TASK));
     }
-    refresh(&state, affected).await?;
+    refresh(&state, affected, agent_relevant).await?;
     state
         .probe_tasks()
         .iter()
@@ -325,7 +339,7 @@ async fn remove(
     }
     // 先刷新缓存（任务不再下发），再清数据：清理失败只记日志，数据由保留期兜底。
     let hit = old.and_then(|t| affected(t.all_nodes, &t.node_ids, false, &[]));
-    refresh(&state, hit).await?;
+    refresh(&state, hit, true).await?;
     let db = state.db.clone();
     if let Err(e) = blocking(move || db.purge_probe_task_data(id)).await {
         tracing::error!(task_id = id, "删除探测任务后清理数据失败: {e:?}");
@@ -374,6 +388,6 @@ async fn isp_template(
     }
     let db = state.db.clone();
     let rows = blocking(move || db.create_probe_tasks(&new)).await?;
-    refresh(&state, None).await?;
+    refresh(&state, None, true).await?;
     Ok((StatusCode::CREATED, Json(rows)))
 }

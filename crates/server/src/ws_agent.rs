@@ -2,6 +2,7 @@
 
 use crate::clock::normalize_ts;
 use crate::db::now_ms;
+use crate::probe::tasks_for_node;
 use crate::state::AppState;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
@@ -10,7 +11,7 @@ use axum::response::Response;
 use minimon_common::protocol::{AgentMsg, ErrorCode, Hello, ServerMsg, check_version};
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior, interval, timeout};
 
 /// agent 消息（Hello/Report）都很小，64 KiB 绰绰有余。
@@ -214,7 +215,7 @@ async fn session(
         return;
     }
 
-    let (conn_id, kick_rx, outbox_rx) = match state.registry().connect_at(node_id, hello, epoch) {
+    let (conn_id, kick_rx, dirty_rx) = match state.registry().connect_at(node_id, hello, epoch) {
         Ok(c) => c,
         Err(code) => {
             // 握手期间 token 被重置或节点被删除。
@@ -223,10 +224,10 @@ async fn session(
         }
     };
     tracing::info!(node_id, conn_id, "agent 已连接");
-    // Welcome 已发出、会话已注册：立即下发当前任务（即使为空）。
+    // Welcome 已发出、会话已注册（信号先于计算）：立即下发当前任务（即使为空）。
     state.dispatch_probe_tasks(Some(vec![node_id]));
 
-    run(&state, node_id, conn_id, kick_rx, outbox_rx, &mut socket).await;
+    run(&state, node_id, conn_id, kick_rx, dirty_rx, &mut socket).await;
 
     // 被替换的旧连接 disconnect 返回 false：不发 Offline，也不动新会话。
     if state.registry().disconnect(node_id, conn_id) {
@@ -239,7 +240,7 @@ async fn run(
     node_id: i64,
     conn_id: u64,
     mut kick_rx: oneshot::Receiver<ErrorCode>,
-    mut outbox_rx: mpsc::Receiver<ServerMsg>,
+    mut dirty_rx: watch::Receiver<u64>,
     socket: &mut WebSocket,
 ) {
     let mut shutdown = state.shutdown_rx();
@@ -261,7 +262,11 @@ async fn run(
                 }
                 return;
             }
-            Some(msg) = outbox_rx.recv() => {
+            Ok(()) = dirty_rx.changed() => {
+                // 发送时才按当前缓存计算：期间再有变化会再次触发，始终以最新为准。
+                let msg = ServerMsg::ProbeTasks {
+                    tasks: tasks_for_node(&state.probe_tasks(), node_id),
+                };
                 if !send_msg(socket, &msg).await {
                     return;
                 }

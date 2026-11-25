@@ -5,11 +5,11 @@ use crate::db::{Db, DbError, Node};
 pub use crate::ingest::IngestHandle;
 use crate::ingest::{DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH, IngestJoin};
 use crate::period::{DEFAULT_TZ, Tz, parse_tz};
-use minimon_common::protocol::{ErrorCode, Hello, Report, ServerMsg};
+use minimon_common::protocol::{ErrorCode, Hello, Report};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
+use tokio::sync::{Notify, broadcast, oneshot, watch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -244,14 +244,12 @@ struct Session {
     latest: Option<Report>,
     info: Hello,
     kick: oneshot::Sender<ErrorCode>,
-    outbox: mpsc::Sender<ServerMsg>,
+    /// 探测任务脏标记：代数递增即通知会话按当前缓存重发（只保留最新，不排队）。
+    dirty: watch::Sender<u64>,
 }
 
-/// 每个会话的出站队列容量；满时丢弃（下一次变更会重发全量）。
-pub(crate) const OUTBOX_CAP: usize = 8;
-
-/// 注册结果：连接号、kick 通道、出站队列接收端。
-pub type Connected = (u64, oneshot::Receiver<ErrorCode>, mpsc::Receiver<ServerMsg>);
+/// 注册结果：连接号、kick 通道、探测任务脏标记接收端。
+pub type Connected = (u64, oneshot::Receiver<ErrorCode>, watch::Receiver<u64>);
 
 /// 在线节点表。锁只在内存操作期间持有，不跨 await。
 ///
@@ -294,7 +292,7 @@ impl Registry {
         match self.connect_at(node_id, info, self.epoch()) {
             Ok(c) => c,
             // 与并发 revoke 撞上：返回一个已被吊销、无会话的连接 id。
-            Err(_) => (0, oneshot::channel().1, mpsc::channel(1).1),
+            Err(_) => (0, oneshot::channel().1, watch::channel(0).1),
         }
     }
 
@@ -308,13 +306,13 @@ impl Registry {
     ) -> Result<Connected, ErrorCode> {
         let conn_id = self.next_conn.fetch_add(1, Ordering::Relaxed) + 1;
         let (kick, kick_rx) = oneshot::channel();
-        let (outbox, outbox_rx) = mpsc::channel(OUTBOX_CAP);
+        let (dirty, dirty_rx) = watch::channel(0);
         let session = Session {
             conn_id,
             latest: None,
             info,
             kick,
-            outbox,
+            dirty,
         };
         let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         // 锁顺序固定：sessions -> epochs。
@@ -333,7 +331,7 @@ impl Registry {
         }
         self.live.publish(LiveEvent::Online { node_id });
         drop(map);
-        Ok((conn_id, kick_rx, outbox_rx))
+        Ok((conn_id, kick_rx, dirty_rx))
     }
 
     /// 在线节点 id。
@@ -342,22 +340,17 @@ impl Registry {
         map.keys().copied().collect()
     }
 
-    /// 向在线节点投递消息；不在线返回 false。队列满时丢弃并 warn。
-    pub fn send_to(&self, node_id: i64, msg: ServerMsg) -> bool {
-        self.send_with(node_id, || msg)
-    }
-
-    /// 持会话表读锁时才生成消息再入队：同一节点的多条消息按生成（读缓存）顺序入队，
-    /// 不会出现先读到的旧快照后入队。
-    pub(crate) fn send_with(&self, node_id: i64, make: impl FnOnce() -> ServerMsg) -> bool {
+    /// 标记在线节点的探测任务已变化；不在线返回 false。会话按发送时的缓存重算，
+    /// 多次标记自然合并，不存在旧快照后到或队列满丢新的问题。
+    pub(crate) fn mark_dirty(&self, node_id: i64) -> bool {
         let map = self.sessions.read().unwrap_or_else(|e| e.into_inner());
-        let Some(s) = map.get(&node_id) else {
-            return false;
-        };
-        if s.outbox.try_send(make()).is_err() {
-            tracing::warn!(node_id, "出站队列已满或已关闭，丢弃消息");
+        match map.get(&node_id) {
+            Some(s) => {
+                s.dirty.send_modify(|g| *g = g.wrapping_add(1));
+                true
+            }
+            None => false,
         }
-        true
     }
 
     /// 吊销节点会话（重置 token / 删除节点）：通知连接以 `Unauthorized` 关闭，
