@@ -3,7 +3,6 @@ use minimon_common::protocol::{AgentMsg, ErrorCode, Hello, PROTOCOL_VERSION, Rep
 use minimon_server::config::ServerConfig;
 use minimon_server::db::Db;
 use minimon_server::state::{AppState, LiveEvent};
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -108,16 +107,6 @@ async fn recv(ws: &mut Ws) -> Option<ServerMsg> {
     }
 }
 
-async fn wait_until<F: Future<Output = bool>>(mut f: impl FnMut() -> F) {
-    for _ in 0..200 {
-        if f().await {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("条件在超时内未满足");
-}
-
 async fn next_event(rx: &mut broadcast::Receiver<LiveEvent>) -> LiveEvent {
     tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await
@@ -212,13 +201,21 @@ async fn second_connection_kicks_first_without_offline() {
         })
     ));
     assert!(recv(&mut a).await.is_none());
-    // B 仍然可用：上报能更新 registry，且事件流里从未出现 Offline。
-    send(&mut b, &AgentMsg::Report(report())).await;
-    wait_until(|| async { fx.state.registry().snapshot()[0].1.is_some() }).await;
-    while let Ok(ev) = live.try_recv() {
-        assert!(!matches!(ev, LiveEvent::Offline { .. }), "不应出现 Offline");
+    // B 仍然可用：连续两次上报都必须被接受（若旧连接误删新会话，上报会被拒绝而超时）。
+    // 收集 kick 之后直到 B 的 Report 之间的所有事件，其中不得有 Offline。
+    for _ in 0..2 {
+        send(&mut b, &AgentMsg::Report(report())).await;
+        loop {
+            match next_event(&mut live).await {
+                LiveEvent::Offline { .. } => panic!("不应出现 Offline"),
+                LiveEvent::Report { .. } => break,
+                LiveEvent::Online { .. } => {}
+            }
+        }
     }
-    assert_eq!(fx.state.registry().snapshot().len(), 1);
+    let snap = fx.state.registry().snapshot();
+    assert_eq!(snap.len(), 1);
+    assert!(snap[0].1.is_some());
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 //! `GET /api/agent/ws`：agent 接入。
 
-use crate::state::{AppState, LiveEvent};
+use crate::state::AppState;
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderMap, header};
@@ -137,14 +137,12 @@ async fn session(state: AppState, node_id: i64, mut socket: WebSocket) {
     }
 
     let (conn_id, kick_rx) = state.registry().connect(node_id, hello);
-    state.live().publish(LiveEvent::Online { node_id });
     tracing::info!(node_id, conn_id, "agent 已连接");
 
     run(&state, node_id, conn_id, kick_rx, &mut socket).await;
 
     // 被替换的旧连接 disconnect 返回 false：不发 Offline，也不动新会话。
     if state.registry().disconnect(node_id, conn_id) {
-        state.live().publish(LiveEvent::Offline { node_id });
         tracing::info!(node_id, conn_id, "agent 已离线");
     }
 }
@@ -184,12 +182,10 @@ async fn run(
                     Message::Text(t) => match serde_json::from_str::<AgentMsg>(&t) {
                         Ok(AgentMsg::Report(report)) => {
                             if !state.registry().update(node_id, conn_id, report.clone()) {
+                                // 已被新连接替换（kick 与 recv 同时就绪）。
+                                reject(socket, ErrorCode::Replaced, "同一 token 有新连接，当前连接被替换").await;
                                 return;
                             }
-                            state.live().publish(LiveEvent::Report {
-                                node_id,
-                                report: report.clone(),
-                            });
                             state.ingest.push(node_id, report);
                         }
                         Ok(_) => {}

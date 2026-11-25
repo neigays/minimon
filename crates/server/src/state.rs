@@ -21,10 +21,11 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(db: Arc<Db>, cfg: ServerConfig) -> Self {
+        let live = LiveHub::new();
         AppState {
             db,
-            registry: Registry::default(),
-            live: LiveHub::new(),
+            registry: Registry::new(live.clone()),
+            live,
             ingest: IngestHandle,
             cfg: Arc::new(cfg),
         }
@@ -47,14 +48,25 @@ struct Session {
 }
 
 /// 在线节点表。锁只在内存操作期间持有，不跨 await。
-#[derive(Clone, Default)]
+///
+/// Online/Offline/Report 事件在持锁期间发布，保证事件顺序与表状态一致。
+#[derive(Clone)]
 pub struct Registry {
+    live: LiveHub,
     sessions: Arc<RwLock<HashMap<i64, Session>>>,
     next_conn: Arc<AtomicU64>,
 }
 
 impl Registry {
-    /// 注册新会话。已有会话时先通知其退出再替换。
+    pub fn new(live: LiveHub) -> Self {
+        Registry {
+            live,
+            sessions: Arc::default(),
+            next_conn: Arc::default(),
+        }
+    }
+
+    /// 注册新会话（发布 Online）。已有会话时先通知其退出再替换。
     pub fn connect(&self, node_id: i64, info: Hello) -> (u64, oneshot::Receiver<()>) {
         let conn_id = self.next_conn.fetch_add(1, Ordering::Relaxed) + 1;
         let (kick, kick_rx) = oneshot::channel();
@@ -64,34 +76,34 @@ impl Registry {
             info,
             kick,
         };
-        let old = self
-            .sessions
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(node_id, session);
-        if let Some(old) = old {
+        let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = map.insert(node_id, session) {
             let _ = old.kick.send(());
         }
+        self.live.publish(LiveEvent::Online { node_id });
+        drop(map);
         (conn_id, kick_rx)
     }
 
-    /// 更新最新上报；会话已被替换时返回 false。
+    /// 更新最新上报并发布 Report；会话已被替换时返回 false。
     pub fn update(&self, node_id: i64, conn_id: u64, report: Report) -> bool {
         let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         match map.get_mut(&node_id) {
             Some(s) if s.conn_id == conn_id => {
-                s.latest = Some(report);
+                s.latest = Some(report.clone());
+                self.live.publish(LiveEvent::Report { node_id, report });
                 true
             }
             _ => false,
         }
     }
 
-    /// 仅当 conn_id 匹配时移除；返回是否真的移除了（被踢的旧连接返回 false）。
+    /// 仅当 conn_id 匹配时移除并发布 Offline；返回是否真的移除了（被踢的旧连接返回 false）。
     pub fn disconnect(&self, node_id: i64, conn_id: u64) -> bool {
         let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         if map.get(&node_id).is_some_and(|s| s.conn_id == conn_id) {
             map.remove(&node_id);
+            self.live.publish(LiveEvent::Offline { node_id });
             true
         } else {
             false
@@ -134,7 +146,7 @@ impl LiveHub {
         self.tx.subscribe()
     }
 
-    pub fn publish(&self, ev: LiveEvent) {
+    fn publish(&self, ev: LiveEvent) {
         // 没有订阅者时 send 返回 Err，属正常情况。
         let _ = self.tx.send(ev);
     }
@@ -173,7 +185,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_conn_cannot_remove_or_update_new_session() {
-        let r = Registry::default();
+        let r = Registry::new(LiveHub::new());
         let (c1, mut k1) = r.connect(7, hello());
         let (c2, _k2) = r.connect(7, hello());
         assert!(k1.try_recv().is_ok(), "旧会话应收到 kick");
@@ -182,5 +194,49 @@ mod tests {
         assert!(r.info(7).is_some());
         assert!(r.disconnect(7, c2));
         assert!(r.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn events_follow_table_state_in_order() {
+        let live = LiveHub::new();
+        let mut rx = live.subscribe();
+        let r = Registry::new(live);
+        let (c1, _k1) = r.connect(7, hello());
+        let (c2, _k2) = r.connect(7, hello());
+        assert!(!r.disconnect(7, c1));
+        assert!(r.update(7, c2, report()));
+        assert!(r.disconnect(7, c2));
+        let evs: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(matches!(
+            evs.as_slice(),
+            [
+                LiveEvent::Online { .. },
+                LiveEvent::Online { .. },
+                LiveEvent::Report { .. },
+                LiveEvent::Offline { .. }
+            ]
+        ));
+    }
+
+    pub(super) fn report() -> Report {
+        Report {
+            ts_ms: 1,
+            cpu: 0.0,
+            mem_used: 0,
+            swap_used: 0,
+            disk_used: 0,
+            disk_total: 0,
+            net_rx_bytes: 0,
+            net_tx_bytes: 0,
+            net_rx_rate: 0,
+            net_tx_rate: 0,
+            load1: 0.0,
+            load5: 0.0,
+            load15: 0.0,
+            uptime_secs: 0,
+            process_count: 0,
+            tcp_count: 0,
+            udp_count: 0,
+        }
     }
 }
