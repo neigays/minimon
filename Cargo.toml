@@ -11,6 +11,8 @@ license = "MIT"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+minimon-common = { path = "crates/common" }
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network"] }
 
 [profile.release]
 opt-level = "z"
