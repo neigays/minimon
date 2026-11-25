@@ -30,6 +30,8 @@ pub struct AppState {
     nodes: Arc<RwLock<Arc<Vec<Node>>>>,
     /// 每节点最后一条已知上报（在线与离线都用它）；启动时从库恢复。
     last_known: LastKnown,
+    /// 串行化节点缓存重载，避免并发重载乱序完成留下旧缓存。
+    reload_lock: Arc<tokio::sync::Mutex<()>>,
     require_login: Arc<AtomicBool>,
     pub(crate) ingest: IngestHandle,
     pub(crate) cfg: Arc<ServerConfig>,
@@ -74,6 +76,7 @@ impl AppState {
             live,
             nodes,
             last_known,
+            reload_lock: Arc::default(),
             require_login: Arc::new(AtomicBool::new(require_login)),
             ingest,
             cfg: Arc::new(cfg),
@@ -142,6 +145,8 @@ impl AppState {
     }
 
     pub(crate) async fn reload_nodes(&self) -> Result<(), DbError> {
+        // 锁跨 读库 + 写缓存：后开始的重载一定读到不早于先开始者的数据。
+        let _serial = self.reload_lock.lock().await;
         let db = self.db.clone();
         let list = tokio::task::spawn_blocking(move || db.list_nodes())
             .await
@@ -204,6 +209,10 @@ pub struct Registry {
     live: LiveHub,
     last_known: LastKnown,
     sessions: Arc<RwLock<HashMap<i64, Session>>>,
+    /// 全局吊销序号；`epochs` 记录每个节点最近一次被吊销时的序号。
+    /// 握手开始时（认证之前）记下全局序号，注册时（持 sessions 锁）核对。
+    revoke_seq: Arc<AtomicU64>,
+    epochs: Arc<RwLock<HashMap<i64, u64>>>,
     next_conn: Arc<AtomicU64>,
 }
 
@@ -217,12 +226,34 @@ impl Registry {
             live,
             last_known,
             sessions: Arc::default(),
+            revoke_seq: Arc::default(),
+            epochs: Arc::default(),
             next_conn: Arc::default(),
         }
     }
 
-    /// 注册新会话（发布 Online）。已有会话时先通知其退出再替换。
+    /// 当前吊销序号（认证 token 之前读取）。
+    pub fn epoch(&self) -> u64 {
+        self.revoke_seq.load(Ordering::SeqCst)
+    }
+
+    /// 以当前序号注册（测试与无握手场景）。
     pub fn connect(&self, node_id: i64, info: Hello) -> (u64, oneshot::Receiver<ErrorCode>) {
+        match self.connect_at(node_id, info, self.epoch()) {
+            Ok(c) => c,
+            // 与并发 revoke 撞上：返回一个已被吊销、无会话的连接 id。
+            Err(_) => (0, oneshot::channel().1),
+        }
+    }
+
+    /// 注册新会话（发布 Online）。已有会话时先通知其退出再替换。
+    /// 握手期间节点被吊销（纪元变化）时拒绝，调用方应回复 `Unauthorized`。
+    pub fn connect_at(
+        &self,
+        node_id: i64,
+        info: Hello,
+        epoch: u64,
+    ) -> Result<(u64, oneshot::Receiver<ErrorCode>), ErrorCode> {
         let conn_id = self.next_conn.fetch_add(1, Ordering::Relaxed) + 1;
         let (kick, kick_rx) = oneshot::channel();
         let session = Session {
@@ -232,18 +263,34 @@ impl Registry {
             kick,
         };
         let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+        // 锁顺序固定：sessions -> epochs。
+        let revoked_at = self
+            .epochs
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&node_id)
+            .copied()
+            .unwrap_or(0);
+        if revoked_at > epoch {
+            return Err(ErrorCode::Unauthorized);
+        }
         if let Some(old) = map.insert(node_id, session) {
             let _ = old.kick.send(ErrorCode::Replaced);
         }
         self.live.publish(LiveEvent::Online { node_id });
         drop(map);
-        (conn_id, kick_rx)
+        Ok((conn_id, kick_rx))
     }
 
     /// 吊销节点会话（重置 token / 删除节点）：通知连接以 `Unauthorized` 关闭，
     /// 移除会话并发布 Offline（持锁，顺序与表状态一致）。返回是否有会话被移除。
     pub fn revoke(&self, node_id: i64) -> bool {
         let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+        let seq = self.revoke_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        self.epochs
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(node_id, seq);
         match map.remove(&node_id) {
             Some(s) => {
                 let _ = s.kick.send(ErrorCode::Unauthorized);
@@ -385,6 +432,60 @@ pub(crate) mod tests {
             evs.as_slice(),
             [LiveEvent::Online { .. }, LiveEvent::Offline { .. }]
         ));
+    }
+
+    fn app_state() -> AppState {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        AppState::new(db, ServerConfig::default()).unwrap().0
+    }
+
+    #[tokio::test]
+    async fn forget_node_drops_last_known() {
+        let st = app_state();
+        st.last_known.write().unwrap().insert(5, report());
+        st.forget_node(5);
+        assert!(st.last_known().is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_reloads_end_with_cache_matching_db() {
+        let st = app_state();
+        let mut tasks = Vec::new();
+        for i in 0..8 {
+            let st = st.clone();
+            tasks.push(tokio::spawn(async move {
+                let db = st.db.clone();
+                let name = format!("n{i}");
+                tokio::task::spawn_blocking(move || db.add_node(&name))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                st.reload_nodes().await.unwrap();
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let in_db = st.db.list_nodes().unwrap();
+        assert_eq!(in_db.len(), 8);
+        assert_eq!(*st.nodes(), in_db);
+    }
+
+    #[tokio::test]
+    async fn stale_epoch_connect_is_rejected_after_revoke() {
+        let r = Registry::new(LiveHub::new());
+        let stale = r.epoch();
+        assert!(!r.revoke(7), "无会话也要推进纪元");
+        assert_eq!(
+            r.connect_at(7, hello(), stale).err(),
+            Some(ErrorCode::Unauthorized)
+        );
+        assert!(r.snapshot().is_empty());
+        let fresh = r.epoch();
+        assert!(r.connect_at(7, hello(), fresh).is_ok());
+        assert_eq!(r.snapshot().len(), 1);
+        // 其他节点不受影响
+        assert!(r.connect_at(8, hello(), 0).is_ok());
     }
 
     #[tokio::test]

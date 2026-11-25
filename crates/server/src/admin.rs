@@ -155,8 +155,13 @@ async fn create(
         f.note.unwrap_or_default(),
     );
     let (node, token) = blocking(move || db.add_node_with(&name, &group, &region, &note)).await?;
-    refresh(&state).await?;
-    let node = views::admin_node(&state, node.id).ok_or_else(ApiError::internal)?;
+    // 库已提交、token 只会返回这一次：缓存刷新失败只记日志（下次重载自愈），不丢 token。
+    if let Err(e) = state.reload_nodes().await {
+        tracing::error!(error = %e, "新增节点后刷新缓存失败");
+    }
+    state.publish_resync();
+    let node =
+        views::admin_node(&state, node.id).unwrap_or_else(|| views::admin_node_of(&state, &node));
     Ok((StatusCode::CREATED, Json(Created { node, token })))
 }
 
@@ -210,7 +215,12 @@ async fn remove(
     }
     // id 会被 SQLite 复用：内存里的最后已知上报必须一并清掉。
     state.forget_node(id);
-    refresh(&state).await?;
+    // 再吊销一次：删除前刚通过认证、尚在握手的 agent 也要被拒绝。
+    state.registry().revoke(id);
+    if let Err(e) = state.reload_nodes().await {
+        tracing::error!(error = %e, "删除节点后刷新缓存失败");
+    }
+    state.publish_resync();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -225,7 +235,11 @@ async fn reset_token(
         .ok_or_else(|| ApiError::not_found(MSG_NO_NODE))?;
     // 旧 token 已失效：踢掉在线的 agent（以 Error{unauthorized} 关闭）。
     state.registry().revoke(id);
-    refresh(&state).await?;
+    // token 只返回这一次：缓存刷新失败不得让它丢失。
+    if let Err(e) = state.reload_nodes().await {
+        tracing::error!(error = %e, "重置 token 后刷新缓存失败");
+    }
+    state.publish_resync();
     Ok(Json(serde_json::json!({ "token": token })))
 }
 

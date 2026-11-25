@@ -130,6 +130,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");
         let db = Arc::new(Db::open(&path).unwrap());
+        // 入库只写已存在的节点：预建 id=1。
+        assert_eq!(db.add_node("n").unwrap().0.id, 1);
         let check = rusqlite::Connection::open(&path).unwrap();
         Fx {
             _dir: dir,

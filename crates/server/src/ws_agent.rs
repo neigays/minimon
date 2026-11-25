@@ -34,6 +34,8 @@ pub async fn handler(
 ) -> Response {
     let ip = crate::auth::client_ip(&headers, peer, state.cfg.real_ip_header.as_deref());
     let token = bearer(&headers);
+    // 认证之前读取吊销纪元：认证到注册之间被重置 / 删除的节点不得注册。
+    let epoch = state.registry().epoch();
     let node_id = match token {
         Some(t) => {
             let db = state.db.clone();
@@ -65,7 +67,7 @@ pub async fn handler(
         .on_upgrade(move |socket| async move {
             let _guard = guard;
             match node_id {
-                Some(id) => session(state, id, ip, socket).await,
+                Some(id) => session(state, id, epoch, ip, socket).await,
                 None => {
                     let mut socket = socket;
                     reject(&mut socket, ErrorCode::Unauthorized, "token 无效").await;
@@ -153,7 +155,13 @@ async fn read_hello(socket: &mut WebSocket) -> Result<Hello, HelloError> {
     }
 }
 
-async fn session(state: AppState, node_id: i64, ip: std::net::IpAddr, mut socket: WebSocket) {
+async fn session(
+    state: AppState,
+    node_id: i64,
+    epoch: u64,
+    ip: std::net::IpAddr,
+    mut socket: WebSocket,
+) {
     let hello = match read_hello(&mut socket).await {
         Ok(h) => h,
         Err(HelloError::IncompatibleVersion) => {
@@ -204,7 +212,14 @@ async fn session(state: AppState, node_id: i64, ip: std::net::IpAddr, mut socket
         return;
     }
 
-    let (conn_id, kick_rx) = state.registry().connect(node_id, hello);
+    let (conn_id, kick_rx) = match state.registry().connect_at(node_id, hello, epoch) {
+        Ok(c) => c,
+        Err(code) => {
+            // 握手期间 token 被重置或节点被删除。
+            reject(&mut socket, code, "token 已失效或节点已删除").await;
+            return;
+        }
+    };
     tracing::info!(node_id, conn_id, "agent 已连接");
 
     run(&state, node_id, conn_id, kick_rx, &mut socket).await;
@@ -258,8 +273,12 @@ async fn run(
                     Message::Text(t) => match serde_json::from_str::<AgentMsg>(&t) {
                         Ok(AgentMsg::Report(report)) => {
                             if !state.registry().update(node_id, conn_id, report.clone()) {
-                                // 已被新连接替换（kick 与 recv 同时就绪）。
-                                reject(socket, ErrorCode::Replaced, "同一 token 有新连接，当前连接被替换").await;
+                                // 会话已不在表中（kick 与 recv 同时就绪）：以 kick 带的原因为准，
+                                // 吊销与替换的提示不同。
+                                match kick_rx.try_recv() {
+                                    Ok(ErrorCode::Unauthorized) => reject(socket, ErrorCode::Unauthorized, "token 已失效或节点已删除").await,
+                                    _ => reject(socket, ErrorCode::Replaced, "同一 token 有新连接，当前连接被替换").await,
+                                }
                                 return;
                             }
                             state.ingest.push(node_id, report);

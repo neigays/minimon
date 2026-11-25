@@ -429,6 +429,35 @@ mod tests {
     }
 
     #[test]
+    fn ids_are_not_reused_after_delete() {
+        let db = Db::open_in_memory().unwrap();
+        let (a, _) = db.add_node("a").unwrap();
+        db.delete_node(a.id).unwrap();
+        let (b, _) = db.add_node("b").unwrap();
+        assert_ne!(a.id, b.id);
+        let (c, _) = db.add_node_with("c", "", "", "").unwrap();
+        assert!(c.id > b.id);
+    }
+
+    #[test]
+    fn insert_reports_skips_missing_nodes_without_failing_batch() {
+        let db = Db::open_in_memory().unwrap();
+        let (a, _) = db.add_node("a").unwrap();
+        let mut r = crate::state::tests::report();
+        r.ts_ms = 10;
+        let n = db
+            .insert_reports(&[(9999, r.clone()), (a.id, r.clone())])
+            .unwrap();
+        assert_eq!(n, 1);
+        let rows: i64 = db
+            .raw_conn_for_test()
+            .query_row("SELECT count(*) FROM metrics_raw", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(db.insert_reports(&[(9999, r)]).unwrap(), 0);
+    }
+
+    #[test]
     fn m2_tables_exist() {
         let db = Db::open_in_memory().unwrap();
         let c = db.raw_conn_for_test();

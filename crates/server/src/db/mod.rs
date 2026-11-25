@@ -53,6 +53,7 @@ fn migrate(conn: &mut Connection) -> Result<(), DbError> {
     let migrations = Migrations::new(vec![
         M::up(include_str!("migrations/0001_init.sql")),
         M::up(include_str!("migrations/0002_m2.sql")),
+        M::up(include_str!("migrations/0003_nodes_autoincrement.sql")),
     ]);
     migrations.to_latest(conn)?;
     Ok(())

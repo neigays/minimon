@@ -145,6 +145,11 @@ pub fn admin_node(state: &AppState, id: i64) -> Option<AdminNode> {
     Some(admin_view(state, n, &snap))
 }
 
+/// 不依赖缓存的单节点管理员视图（缓存刷新失败时的兜底）。
+pub fn admin_node_of(state: &AppState, n: &crate::db::Node) -> AdminNode {
+    admin_view(state, n, &Snapshot::take(state))
+}
+
 fn admin_view(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> AdminNode {
     let (base, info) = base(state, n, snap);
     AdminNode {

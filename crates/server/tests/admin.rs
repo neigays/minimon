@@ -415,7 +415,7 @@ async fn delete_node_removes_data_and_kicks() {
 }
 
 #[tokio::test]
-async fn reused_id_does_not_inherit_last_known() {
+async fn recreated_node_does_not_inherit_last_known() {
     let f = start(|_| {}).await;
     let cookie = login(f.port).await;
     let (id, token) = create(&f, &cookie, "a").await;
@@ -432,7 +432,7 @@ async fn reused_id_does_not_inherit_last_known() {
     .await;
     assert_eq!(code, 204);
     let (id_b, _) = create(&f, &cookie, "b").await;
-    assert_eq!(id_b, id, "测试前提：SQLite 复用了 id");
+    assert_ne!(id_b, id, "AUTOINCREMENT：id 不得复用");
     for ck in [None, Some(cookie.as_str())] {
         let (_, v) = nodes(&f, ck).await;
         assert_eq!(v.as_array().unwrap().len(), 1);

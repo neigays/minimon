@@ -4,23 +4,26 @@ use rusqlite::params;
 use super::{Db, DbError};
 
 impl Db {
-    /// 单事务批量写入原始指标；同一 (node_id, ts_ms) 以后写入者为准。返回写入行数。
+    /// 单事务批量写入原始指标；同一 (node_id, ts_ms) 以后写入者为准。返回实际写入行数（已删除节点的行被跳过）。
     pub fn insert_reports(&self, rows: &[(i64, Report)]) -> Result<usize, DbError> {
         if rows.is_empty() {
             return Ok(0);
         }
         self.write(|c| {
             let tx = c.transaction()?;
+            let mut written = 0;
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR REPLACE INTO metrics_raw (node_id, ts_ms, cpu, mem_used, swap_used, \
                      disk_used, disk_total, net_rx_bytes, net_tx_bytes, net_rx_rate, net_tx_rate, \
                      load1, load5, load15, uptime_secs, process_count, tcp_count, udp_count) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18 \
+                     WHERE EXISTS (SELECT 1 FROM nodes WHERE id = ?1)",
                 )?;
                 for (node_id, r) in rows {
                     // u64 -> i64：SQLite 只有 64 位有符号整数，实际取值远小于上限。
-                    stmt.execute(params![
+                    // 节点已被删除时 EXISTS 为假，该行静默跳过（不会写成孤儿数据）。
+                    written += stmt.execute(params![
                         node_id,
                         r.ts_ms,
                         r.cpu,
@@ -58,7 +61,7 @@ impl Db {
                 .execute(params![ts, node_id])?;
             }
             tx.commit()?;
-            Ok(rows.len())
+            Ok(written)
         })
     }
 }
