@@ -15,6 +15,8 @@ use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::timeout;
 
+/// 公开端点不接受有意义的客户端数据，帧上限压到 4 KiB 防内存滥用。
+const LIVE_MAX_MSG: usize = 4 << 10;
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,8 +47,8 @@ enum LiveMsg {
 /// 当前可见（非 hidden）节点的公开视图，按 (sort, id) 排序（缓存已按此排序）。
 fn public_nodes(state: &AppState) -> Vec<PublicNode> {
     let online: HashMap<i64, Option<Report>> = state.registry().snapshot().into_iter().collect();
-    state
-        .nodes
+    let nodes = state.nodes();
+    nodes
         .iter()
         .filter(|n| !n.hidden)
         .map(|n| {
@@ -77,10 +79,12 @@ pub async fn nodes(State(state): State<AppState>) -> Json<Vec<PublicNode>> {
 pub async fn ws(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     // guard 在 upgrade 之前取得，停机时不会漏掉刚接入的会话。
     let guard = state.session_guard();
-    ws.on_upgrade(move |socket| async move {
-        let _guard = guard;
-        session(state, socket).await;
-    })
+    ws.max_message_size(LIVE_MAX_MSG)
+        .max_frame_size(LIVE_MAX_MSG)
+        .on_upgrade(move |socket| async move {
+            let _guard = guard;
+            session(state, socket).await;
+        })
 }
 
 async fn send(socket: &mut WebSocket, msg: &LiveMsg) -> bool {
@@ -105,7 +109,7 @@ fn to_msg(state: &AppState, ev: LiveEvent) -> Option<LiveMsg> {
         | LiveEvent::Offline { node_id }
         | LiveEvent::Report { node_id, .. } => *node_id,
     };
-    if !state.nodes.iter().any(|n| n.id == id && !n.hidden) {
+    if !state.nodes().iter().any(|n| n.id == id && !n.hidden) {
         return None;
     }
     Some(match ev {

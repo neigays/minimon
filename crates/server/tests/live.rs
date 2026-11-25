@@ -267,3 +267,122 @@ async fn hidden_node_excluded() {
     let body = http_get(f.port, "/api/nodes").await.1;
     assert!(!body.contains(&format!("\"id\":{hidden_id},")), "{body}");
 }
+
+fn keys(v: &Value) -> Vec<String> {
+    let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+    k.sort();
+    k
+}
+
+fn sorted(v: &[&str]) -> Vec<String> {
+    let mut k: Vec<String> = v.iter().map(|s| s.to_string()).collect();
+    k.sort();
+    k
+}
+
+/// 公开输出的键白名单：新增字段（流量、额度等）必须显式改这里，防止无意泄露。
+#[tokio::test]
+async fn public_output_key_allowlist() {
+    let node_keys = sorted(&[
+        "id",
+        "name",
+        "online",
+        "sort",
+        "os",
+        "arch",
+        "cpu_cores",
+        "mem_total",
+        "swap_total",
+        "disk_total",
+        "latest",
+    ]);
+    let report_keys = sorted(&[
+        "ts_ms",
+        "cpu",
+        "mem_used",
+        "swap_used",
+        "disk_used",
+        "disk_total",
+        "net_rx_bytes",
+        "net_tx_bytes",
+        "net_rx_rate",
+        "net_tx_rate",
+        "load1",
+        "load5",
+        "load15",
+        "uptime_secs",
+        "process_count",
+        "tcp_count",
+        "udp_count",
+    ]);
+    let f = start(1, |_| {}).await;
+    let mut l = live(f.port).await;
+    let snap = next_json(&mut l).await;
+    assert_eq!(keys(&snap["nodes"][0]), node_keys);
+    let mut a = agent(f.port, &f.tokens[0].1).await;
+    let _online = next_json(&mut l).await;
+    send(&mut a, &AgentMsg::Report(report(3.0))).await;
+    let r = next_json(&mut l).await;
+    assert_eq!(keys(&r), sorted(&["type", "node_id", "report"]));
+    assert_eq!(keys(&r["report"]), report_keys);
+    let mut v = Value::Null;
+    for _ in 0..50 {
+        let body = http_get(f.port, "/api/nodes").await.1;
+        v = serde_json::from_str(&body).unwrap();
+        if !v[0]["latest"].is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(keys(&v[0]), node_keys);
+    assert_eq!(keys(&v[0]["latest"]), report_keys);
+}
+
+#[tokio::test]
+async fn node_added_while_running_appears() {
+    let f = start(0, |_| {}).await;
+    let db = Db::open(&f._dir.path().join("t.db")).unwrap();
+    let (node, token) = db.add_node("late").unwrap();
+    let mut l = live(f.port).await;
+    assert_eq!(
+        next_json(&mut l).await["nodes"].as_array().unwrap().len(),
+        0
+    );
+    let _a = agent(f.port, &token).await;
+    let mut v = Value::Null;
+    for _ in 0..50 {
+        let body = http_get(f.port, "/api/nodes").await.1;
+        v = serde_json::from_str(&body).unwrap();
+        if v.as_array().is_some_and(|a| !a.is_empty()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(v[0]["id"], node.id);
+    assert_eq!(v[0]["online"], true);
+    // live 事件也能通过过滤
+    let ev = next_json(&mut l).await;
+    assert_eq!(ev["type"], "online");
+    assert_eq!(ev["node_id"], node.id);
+}
+
+#[tokio::test]
+async fn oversized_live_frame_closes_connection() {
+    let f = start(0, |_| {}).await;
+    let mut l = live(f.port).await;
+    let _snap = next_json(&mut l).await;
+    let _ = l.send(Message::binary(vec![0u8; 1 << 20])).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match l.next().await {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "超大帧应使连接关闭");
+    // server 仍可用
+    let (status, _) = http_get(f.port, "/api/nodes").await;
+    assert_eq!(status, 200);
+}

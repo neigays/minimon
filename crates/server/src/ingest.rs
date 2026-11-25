@@ -36,14 +36,13 @@ impl IngestHandle {
         db: Arc<Db>,
         flush_every: Duration,
         max_batch: usize,
-    ) -> (IngestHandle, IngestJoin) {
+    ) -> std::io::Result<(IngestHandle, IngestJoin)> {
         let (tx, rx) = mpsc::channel();
         let max_batch = max_batch.max(1);
         let thread = std::thread::Builder::new()
             .name("ingest".into())
-            .spawn(move || run(db, rx, flush_every, max_batch))
-            .unwrap_or_else(|e| panic!("无法启动 ingest 线程: {e}")); // 启动阶段
-        (IngestHandle { tx: tx.clone() }, IngestJoin { tx, thread })
+            .spawn(move || run(db, rx, flush_every, max_batch))?;
+        Ok((IngestHandle { tx: tx.clone() }, IngestJoin { tx, thread }))
     }
 
     /// 入队一条上报。线程已退出（关停之后）时忽略。
@@ -165,7 +164,7 @@ mod tests {
     #[test]
     fn flushes_on_batch_size() {
         let f = fx();
-        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_secs(3600), 3);
+        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_secs(3600), 3).unwrap();
         for i in 0..3 {
             h.push(1, rep(i));
         }
@@ -176,7 +175,7 @@ mod tests {
     #[test]
     fn does_not_flush_below_batch_size() {
         let f = fx();
-        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_secs(3600), 3);
+        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_secs(3600), 3).unwrap();
         h.push(1, rep(1));
         h.push(1, rep(2));
         let n = h.flush().blocking_recv().unwrap();
@@ -188,7 +187,7 @@ mod tests {
     #[test]
     fn flushes_on_interval() {
         let f = fx();
-        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_millis(200), 1000);
+        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_millis(200), 1000).unwrap();
         h.push(1, rep(1));
         assert!(wait_count(&f.check, 1, Duration::from_millis(1500)));
         j.shutdown();
@@ -197,7 +196,7 @@ mod tests {
     #[test]
     fn shutdown_flushes_pending() {
         let f = fx();
-        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_secs(3600), 1000);
+        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_secs(3600), 1000).unwrap();
         for i in 0..5 {
             h.push(1, rep(i));
         }
@@ -210,7 +209,7 @@ mod tests {
     #[test]
     fn duplicate_ts_does_not_fail_batch() {
         let f = fx();
-        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_secs(3600), 1000);
+        let (h, j) = IngestHandle::spawn(f.db.clone(), Duration::from_secs(3600), 1000).unwrap();
         h.push(1, rep(5));
         h.push(1, rep(5));
         assert_eq!(h.flush().blocking_recv().unwrap(), 2);

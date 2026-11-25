@@ -10,6 +10,14 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Notify, broadcast, oneshot, watch};
 
+#[derive(Debug, thiserror::Error)]
+pub enum StateError {
+    #[error(transparent)]
+    Db(#[from] DbError),
+    #[error("无法启动 ingest 线程: {0}")]
+    Ingest(#[from] std::io::Error),
+}
+
 const LIVE_CAPACITY: usize = 256;
 
 #[derive(Clone)]
@@ -17,8 +25,8 @@ pub struct AppState {
     pub(crate) db: Arc<Db>,
     registry: Registry,
     live: LiveHub,
-    /// 启动时加载的节点列表（M1 静态，新增节点需重启）。
-    pub(crate) nodes: Arc<Vec<Node>>,
+    /// 节点列表缓存；启动时加载，运行中遇到未知节点时由 `reload_nodes` 刷新。
+    nodes: Arc<RwLock<Arc<Vec<Node>>>>,
     pub(crate) ingest: IngestHandle,
     pub(crate) cfg: Arc<ServerConfig>,
     shutdown: Arc<watch::Sender<bool>>,
@@ -45,11 +53,11 @@ impl Drop for SessionGuard {
 
 impl AppState {
     /// 创建状态并启动入库线程；`IngestJoin` 交给负责关停的一方（`serve_on`）。
-    pub fn new(db: Arc<Db>, cfg: ServerConfig) -> Result<(Self, IngestJoin), DbError> {
-        let nodes = Arc::new(db.list_nodes()?);
+    pub fn new(db: Arc<Db>, cfg: ServerConfig) -> Result<(Self, IngestJoin), StateError> {
+        let nodes = Arc::new(RwLock::new(Arc::new(db.list_nodes()?)));
         let live = LiveHub::new();
         let (ingest, join) =
-            IngestHandle::spawn(db.clone(), DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH);
+            IngestHandle::spawn(db.clone(), DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH)?;
         let state = AppState {
             db,
             registry: Registry::new(live.clone()),
@@ -61,6 +69,26 @@ impl AppState {
             sessions: Arc::default(),
         };
         Ok((state, join))
+    }
+
+    /// 当前节点缓存快照（锁只在克隆 Arc 期间持有）。
+    pub(crate) fn nodes(&self) -> Arc<Vec<Node>> {
+        self.nodes.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 缓存中是否已有该节点。
+    pub(crate) fn has_node(&self, id: i64) -> bool {
+        self.nodes().iter().any(|n| n.id == id)
+    }
+
+    /// 从库重新加载节点缓存（阻塞 IO 放到 spawn_blocking，锁不跨 await）。
+    pub(crate) async fn reload_nodes(&self) -> Result<(), DbError> {
+        let db = self.db.clone();
+        let list = tokio::task::spawn_blocking(move || db.list_nodes())
+            .await
+            .map_err(|_| DbError::Poisoned)??;
+        *self.nodes.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(list);
+        Ok(())
     }
 
     pub(crate) fn session_guard(&self) -> SessionGuard {

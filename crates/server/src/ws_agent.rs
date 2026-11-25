@@ -10,6 +10,8 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::{Instant, MissedTickBehavior, interval, timeout};
 
+/// agent 消息（Hello/Report）都很小，64 KiB 绰绰有余。
+const AGENT_MAX_MSG: usize = 64 << 10;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
@@ -46,18 +48,27 @@ pub async fn handler(
         }
         None => None,
     };
+    // 运行中新增的节点：先刷新缓存，保证注册前它已出现在 /api/nodes 与 live 过滤里。
+    if let Some(id) = node_id
+        && !state.has_node(id)
+        && let Err(e) = state.reload_nodes().await
+    {
+        tracing::error!(error = %e, "刷新节点缓存失败");
+    }
     // guard 在 upgrade 之前取得，确保停机时不会漏掉刚接入的会话。
     let guard = state.session_guard();
-    ws.on_upgrade(move |socket| async move {
-        let _guard = guard;
-        match node_id {
-            Some(id) => session(state, id, socket).await,
-            None => {
-                let mut socket = socket;
-                reject(&mut socket, ErrorCode::Unauthorized, "token 无效").await;
+    ws.max_message_size(AGENT_MAX_MSG)
+        .max_frame_size(AGENT_MAX_MSG)
+        .on_upgrade(move |socket| async move {
+            let _guard = guard;
+            match node_id {
+                Some(id) => session(state, id, socket).await,
+                None => {
+                    let mut socket = socket;
+                    reject(&mut socket, ErrorCode::Unauthorized, "token 无效").await;
+                }
             }
-        }
-    })
+        })
 }
 
 async fn send_msg(socket: &mut WebSocket, msg: &ServerMsg) -> bool {
@@ -89,8 +100,37 @@ async fn reject(socket: &mut WebSocket, code: ErrorCode, message: &str) {
     }
 }
 
+enum HelloError {
+    /// 不是（可解析的）Hello。
+    Invalid,
+    /// 是 Hello，但大版本不同，连字段形状都可能变了。
+    IncompatibleVersion,
+}
+
+fn parse_hello(text: &str) -> Result<Hello, HelloError> {
+    match serde_json::from_str::<AgentMsg>(text) {
+        Ok(AgentMsg::Hello(h)) => Ok(h),
+        Ok(_) => Err(HelloError::Invalid),
+        Err(_) => {
+            // 完整解析失败：只探测 type 与 v，大版本变化时仍能回报 incompatible_version。
+            #[derive(serde::Deserialize)]
+            struct Probe {
+                #[serde(rename = "type")]
+                ty: String,
+                v: u32,
+            }
+            match serde_json::from_str::<Probe>(text) {
+                Ok(p) if p.ty == "hello" && check_version(p.v).is_err() => {
+                    Err(HelloError::IncompatibleVersion)
+                }
+                _ => Err(HelloError::Invalid),
+            }
+        }
+    }
+}
+
 /// 等待第一条文本消息并要求它是 Hello。
-async fn read_hello(socket: &mut WebSocket) -> Option<Hello> {
+async fn read_hello(socket: &mut WebSocket) -> Result<Hello, HelloError> {
     let deadline = Instant::now() + HELLO_TIMEOUT;
     loop {
         let msg = timeout(
@@ -98,26 +138,35 @@ async fn read_hello(socket: &mut WebSocket) -> Option<Hello> {
             socket.recv(),
         )
         .await
-        .ok()??
-        .ok()?;
+        .ok()
+        .flatten()
+        .and_then(|r| r.ok())
+        .ok_or(HelloError::Invalid)?;
         match msg {
-            Message::Text(t) => {
-                return match serde_json::from_str::<AgentMsg>(&t) {
-                    Ok(AgentMsg::Hello(h)) => Some(h),
-                    _ => None,
-                };
-            }
+            Message::Text(t) => return parse_hello(&t),
             Message::Ping(_) | Message::Pong(_) => continue,
-            _ => return None,
+            _ => return Err(HelloError::Invalid),
         }
     }
 }
 
 async fn session(state: AppState, node_id: i64, mut socket: WebSocket) {
-    let Some(hello) = read_hello(&mut socket).await else {
-        tracing::debug!(node_id, "首条消息不是有效 Hello，断开");
-        close(&mut socket).await;
-        return;
+    let hello = match read_hello(&mut socket).await {
+        Ok(h) => h,
+        Err(HelloError::IncompatibleVersion) => {
+            reject(
+                &mut socket,
+                ErrorCode::IncompatibleVersion,
+                "协议版本不兼容",
+            )
+            .await;
+            return;
+        }
+        Err(HelloError::Invalid) => {
+            tracing::debug!(node_id, "首条消息不是有效 Hello，断开");
+            close(&mut socket).await;
+            return;
+        }
     };
     if let Err(code) = check_version(hello.v) {
         reject(&mut socket, code, "协议版本不兼容").await;

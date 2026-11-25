@@ -10,10 +10,12 @@ pub enum ConfigError {
     Parse(#[from] toml::de::Error),
     #[error("MINIMON_LISTEN 不是有效的监听地址: {0}")]
     BadListen(#[from] std::net::AddrParseError),
+    #[error("report_interval_secs 必须大于 0")]
+    BadInterval,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub listen: SocketAddr,
     pub data_dir: PathBuf,
@@ -41,10 +43,19 @@ impl ServerConfig {
             }
             None => ServerConfig::default(),
         };
-        cfg.with_overrides(
+        let cfg = cfg.with_overrides(
             std::env::var("MINIMON_LISTEN").ok().as_deref(),
             std::env::var("MINIMON_DATA_DIR").ok().as_deref(),
-        )
+        )?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.report_interval_secs == 0 {
+            return Err(ConfigError::BadInterval);
+        }
+        Ok(())
     }
 
     fn with_overrides(
@@ -83,6 +94,18 @@ mod tests {
         let c: ServerConfig = toml::from_str("listen = \"127.0.0.1:1234\"").unwrap();
         assert_eq!(c.listen.port(), 1234);
         assert_eq!(c.report_interval_secs, 3);
+    }
+
+    #[test]
+    fn unknown_field_rejected() {
+        assert!(toml::from_str::<ServerConfig>("listn = \"127.0.0.1:1\"").is_err());
+    }
+
+    #[test]
+    fn zero_interval_rejected() {
+        let c: ServerConfig = toml::from_str("report_interval_secs = 0").unwrap();
+        assert!(matches!(c.validate(), Err(ConfigError::BadInterval)));
+        assert!(ServerConfig::default().validate().is_ok());
     }
 
     #[test]

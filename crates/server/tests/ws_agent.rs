@@ -240,3 +240,20 @@ async fn disconnect_emits_offline() {
     ));
     assert!(fx.state.registry().snapshot().is_empty());
 }
+
+#[tokio::test]
+async fn incompatible_version_with_unparseable_hello_shape() {
+    let fx = start().await;
+    let mut ws = connect(fx.port, &fx.token).await;
+    ws.send(Message::text(r#"{"type":"hello","v":2}"#))
+        .await
+        .unwrap();
+    assert!(matches!(
+        recv(&mut ws).await,
+        Some(ServerMsg::Error {
+            code: ErrorCode::IncompatibleVersion,
+            ..
+        })
+    ));
+    assert!(recv(&mut ws).await.is_none());
+}
