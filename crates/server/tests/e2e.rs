@@ -299,3 +299,141 @@ async fn admin_flow_end_to_end() {
         .expect("agent 未退出");
     f.stop().await;
 }
+
+#[tokio::test]
+async fn probe_and_traffic_end_to_end() {
+    let f = start(|c| c.report_interval_secs = 1).await;
+    let port = f.port;
+    let cookie = login(port).await;
+
+    // 本地 TCP 监听作为探测目标
+    let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = format!("127.0.0.1:{}", target_listener.local_addr().unwrap().port());
+    let accept = tokio::spawn(async move {
+        loop {
+            if target_listener.accept().await.is_err() {
+                return;
+            }
+        }
+    });
+
+    let (code, v) = json_of(
+        port,
+        "POST",
+        "/api/admin/nodes",
+        Some(&cookie),
+        Some(r#"{"name":"e2e-probe"}"#),
+    )
+    .await;
+    assert_eq!(code, 201, "{v}");
+    let id = v["node"]["id"].as_i64().unwrap();
+    let token = v["token"].as_str().unwrap().to_string();
+
+    let body = format!(
+        r#"{{"name":"本地TCP","kind":"tcp","target":"{target}","interval_secs":10,"samples":1,"timeout_ms":2000}}"#
+    );
+    let (code, v) = json_of(
+        port,
+        "POST",
+        "/api/admin/probes",
+        Some(&cookie),
+        Some(&body),
+    )
+    .await;
+    assert_eq!(code, 201, "{v}");
+    let task_id = v["id"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("无法取得任务 id: {v}"));
+
+    let mut acfg = AgentConfig::new(format!("ws://127.0.0.1:{port}"), token);
+    acfg.backoff_base = Duration::from_millis(100);
+    acfg.backoff_max = Duration::from_millis(500);
+    let (agent_stop_tx, agent_stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let agent = tokio::spawn(minimon_agent::run(acfg, async {
+        let _ = agent_stop_rx.await;
+    }));
+
+    // 首轮探测在 [0, 10s) 内随机触发，最多等 30 秒
+    let mut guest_text = String::new();
+    let ok = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let (_, _, text) = http(port, "GET", "/api/nodes", None, None).await;
+            if let Ok(v) = serde_json::from_str::<Value>(&text)
+                && let Some(n) = find(&v, id)
+                && let Some(p) = n["probes"]
+                    .as_array()
+                    .and_then(|a| a.iter().find(|p| p["task_id"] == task_id))
+                && p["avg_ms"].is_number()
+            {
+                assert_eq!(p["loss"].as_f64().unwrap(), 0.0, "{p}");
+                guest_text = text;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    assert!(ok.is_ok(), "30 秒内访客视图未见探测结果");
+    assert!(
+        !guest_text.contains(&target),
+        "访客响应不得包含探测目标: {guest_text}"
+    );
+
+    // 流量配置
+    let (code, v) = json_of(
+        port,
+        "PATCH",
+        &format!("/api/admin/nodes/{id}"),
+        Some(&cookie),
+        Some(r#"{"traffic_quota":1000000000000,"traffic_reset_day":15}"#),
+    )
+    .await;
+    assert_eq!(code, 200, "{v}");
+    let (_, admin) = json_of(port, "GET", "/api/nodes", Some(&cookie), None).await;
+    let n = find(&admin, id).expect("管理员应看到节点");
+    assert_eq!(n["traffic_quota"].as_i64(), Some(1_000_000_000_000), "{n}");
+    assert_eq!(n["traffic_reset_day"].as_i64(), Some(15), "{n}");
+    let t = &n["traffic"];
+    assert!(t["used"].as_i64().unwrap() >= 0, "{t}");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    assert!(t["period_start_ms"].as_i64().unwrap() <= now, "{t}");
+    assert!(now < t["period_end_ms"].as_i64().unwrap(), "{t}");
+    let (_, guest) = json_of(port, "GET", "/api/nodes", None, None).await;
+    let gn = find(&guest, id).unwrap();
+    assert!(gn.get("traffic").is_none(), "访客不得看到流量: {gn}");
+
+    // 探测历史（入库每 10 秒 flush，最多等 15 秒）
+    let path = format!("/api/nodes/{id}/probes?range=1h");
+    let mut hist = Value::Null;
+    let ok = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let (code, text) = {
+                let (c, _, t) = http(port, "GET", &path, None, None).await;
+                (c, t)
+            };
+            assert_eq!(code, 200, "{text}");
+            assert!(!text.contains(&target), "历史响应不得含目标: {text}");
+            let v: Value = serde_json::from_str(&text).unwrap();
+            if v["tasks"].as_array().is_some_and(|a| {
+                a.iter().any(|t| {
+                    t["task_id"] == task_id && t["ts"].as_array().is_some_and(|x| !x.is_empty())
+                })
+            }) {
+                hist = v;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    assert!(ok.is_ok(), "探测历史一直无数据点");
+    assert_eq!(hist["granularity"], "raw", "{hist}");
+
+    accept.abort();
+    let _ = agent_stop_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(5), agent).await;
+    f.stop().await;
+}
