@@ -120,7 +120,11 @@ async fn live(port: u16, cookie: Option<&str>) -> Ws {
 
 /// 期望下一条是 `Error{code}`，随后连接结束。
 async fn expect_error_then_closed(ws: &mut Ws, code: &str) {
-    let v = next_json(ws).await;
+    let mut v = next_json(ws).await;
+    // Welcome 之后会先收到初始 probe_tasks，不属于被测内容。
+    while v["type"] == "probe_tasks" {
+        v = next_json(ws).await;
+    }
     assert_eq!(v["type"], "error", "{v}");
     assert_eq!(v["code"], code, "{v}");
     let end = tokio::time::timeout(Duration::from_secs(5), async {

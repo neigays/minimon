@@ -43,10 +43,24 @@ impl FromRequestParts<AppState> for TaskId {
     }
 }
 
-async fn refresh(state: &AppState) -> Result<(), ApiError> {
+/// 重载缓存、通知管理页并向受影响的在线节点下发（`None` 为全部在线节点）。
+async fn refresh(state: &AppState, affected: Option<Vec<i64>>) -> Result<(), ApiError> {
     state.reload_probe_tasks().await?;
+    state.dispatch_probe_tasks(affected);
     state.publish_resync();
     Ok(())
+}
+
+/// 任务变更涉及的节点：任一侧为全部节点则为 `None`（全部在线节点），否则新旧关联之并集。
+fn affected(old_all: bool, old: &[i64], new_all: bool, new: &[i64]) -> Option<Vec<i64>> {
+    if old_all || new_all {
+        return None;
+    }
+    let mut ids = old.to_vec();
+    ids.extend_from_slice(new);
+    ids.sort_unstable();
+    ids.dedup();
+    Some(ids)
 }
 
 // ---------------------------------------------------------------- 校验
@@ -225,7 +239,7 @@ async fn create(
     };
     let db = state.db.clone();
     let row = blocking(move || db.create_probe_task(&new)).await?;
-    refresh(&state).await?;
+    refresh(&state, affected(false, &[], all_nodes, &row.node_ids)).await?;
     Ok((StatusCode::CREATED, Json(row)))
 }
 
@@ -267,6 +281,12 @@ async fn update(
         let ids = validate_nodes(&state, ids)?;
         req.node_ids.is_some().then_some(ids)
     };
+    let affected = affected(
+        cur.all_nodes,
+        &cur.node_ids,
+        all_nodes,
+        links.as_deref().unwrap_or(&cur.node_ids),
+    );
     let patch = ProbeTaskPatch {
         name: req.name.as_deref().map(validate_name).transpose()?,
         kind: req.kind,
@@ -283,7 +303,7 @@ async fn update(
     if !blocking(move || db.update_probe_task(id, &patch)).await? {
         return Err(ApiError::not_found(MSG_NO_TASK));
     }
-    refresh(&state).await?;
+    refresh(&state, affected).await?;
     state
         .probe_tasks()
         .iter()
@@ -298,12 +318,14 @@ async fn remove(
     State(state): State<AppState>,
     TaskId(id): TaskId,
 ) -> Result<StatusCode, ApiError> {
+    let old = state.probe_tasks().iter().find(|t| t.id == id).cloned();
     let db = state.db.clone();
     if !blocking(move || db.delete_probe_task(id)).await? {
         return Err(ApiError::not_found(MSG_NO_TASK));
     }
     // 先刷新缓存（任务不再下发），再清数据：清理失败只记日志，数据由保留期兜底。
-    refresh(&state).await?;
+    let hit = old.and_then(|t| affected(t.all_nodes, &t.node_ids, false, &[]));
+    refresh(&state, hit).await?;
     let db = state.db.clone();
     if let Err(e) = blocking(move || db.purge_probe_task_data(id)).await {
         tracing::error!(task_id = id, "删除探测任务后清理数据失败: {e:?}");
@@ -352,6 +374,6 @@ async fn isp_template(
     }
     let db = state.db.clone();
     let rows = blocking(move || db.create_probe_tasks(&new)).await?;
-    refresh(&state).await?;
+    refresh(&state, None).await?;
     Ok((StatusCode::CREATED, Json(rows)))
 }

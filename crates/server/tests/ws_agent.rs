@@ -101,7 +101,11 @@ async fn recv(ws: &mut Ws) -> Option<ServerMsg> {
             .await
             .expect("等待服务端消息超时");
         match m {
-            Some(Ok(Message::Text(t))) => return Some(serde_json::from_str(&t).unwrap()),
+            Some(Ok(Message::Text(t))) => match serde_json::from_str(&t).unwrap() {
+                // Welcome 之后的初始任务下发由 probe_dispatch 测试覆盖，这里忽略。
+                ServerMsg::ProbeTasks { .. } => continue,
+                msg => return Some(msg),
+            },
             Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return None,
             Some(Ok(_)) => continue,
         }

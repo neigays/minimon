@@ -5,11 +5,11 @@ use crate::db::{Db, DbError, Node};
 pub use crate::ingest::IngestHandle;
 use crate::ingest::{DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH, IngestJoin};
 use crate::period::{DEFAULT_TZ, Tz, parse_tz};
-use minimon_common::protocol::{ErrorCode, Hello, Report};
+use minimon_common::protocol::{ErrorCode, Hello, Report, ServerMsg};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use tokio::sync::{Notify, broadcast, oneshot, watch};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -244,7 +244,14 @@ struct Session {
     latest: Option<Report>,
     info: Hello,
     kick: oneshot::Sender<ErrorCode>,
+    outbox: mpsc::Sender<ServerMsg>,
 }
+
+/// 每个会话的出站队列容量；满时丢弃（下一次变更会重发全量）。
+pub(crate) const OUTBOX_CAP: usize = 8;
+
+/// 注册结果：连接号、kick 通道、出站队列接收端。
+pub type Connected = (u64, oneshot::Receiver<ErrorCode>, mpsc::Receiver<ServerMsg>);
 
 /// 在线节点表。锁只在内存操作期间持有，不跨 await。
 ///
@@ -283,11 +290,11 @@ impl Registry {
     }
 
     /// 以当前序号注册（测试与无握手场景）。
-    pub fn connect(&self, node_id: i64, info: Hello) -> (u64, oneshot::Receiver<ErrorCode>) {
+    pub fn connect(&self, node_id: i64, info: Hello) -> Connected {
         match self.connect_at(node_id, info, self.epoch()) {
             Ok(c) => c,
             // 与并发 revoke 撞上：返回一个已被吊销、无会话的连接 id。
-            Err(_) => (0, oneshot::channel().1),
+            Err(_) => (0, oneshot::channel().1, mpsc::channel(1).1),
         }
     }
 
@@ -298,14 +305,16 @@ impl Registry {
         node_id: i64,
         info: Hello,
         epoch: u64,
-    ) -> Result<(u64, oneshot::Receiver<ErrorCode>), ErrorCode> {
+    ) -> Result<Connected, ErrorCode> {
         let conn_id = self.next_conn.fetch_add(1, Ordering::Relaxed) + 1;
         let (kick, kick_rx) = oneshot::channel();
+        let (outbox, outbox_rx) = mpsc::channel(OUTBOX_CAP);
         let session = Session {
             conn_id,
             latest: None,
             info,
             kick,
+            outbox,
         };
         let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         // 锁顺序固定：sessions -> epochs。
@@ -324,7 +333,31 @@ impl Registry {
         }
         self.live.publish(LiveEvent::Online { node_id });
         drop(map);
-        Ok((conn_id, kick_rx))
+        Ok((conn_id, kick_rx, outbox_rx))
+    }
+
+    /// 在线节点 id。
+    pub(crate) fn online_ids(&self) -> Vec<i64> {
+        let map = self.sessions.read().unwrap_or_else(|e| e.into_inner());
+        map.keys().copied().collect()
+    }
+
+    /// 向在线节点投递消息；不在线返回 false。队列满时丢弃并 warn。
+    pub fn send_to(&self, node_id: i64, msg: ServerMsg) -> bool {
+        self.send_with(node_id, || msg)
+    }
+
+    /// 持会话表读锁时才生成消息再入队：同一节点的多条消息按生成（读缓存）顺序入队，
+    /// 不会出现先读到的旧快照后入队。
+    pub(crate) fn send_with(&self, node_id: i64, make: impl FnOnce() -> ServerMsg) -> bool {
+        let map = self.sessions.read().unwrap_or_else(|e| e.into_inner());
+        let Some(s) = map.get(&node_id) else {
+            return false;
+        };
+        if s.outbox.try_send(make()).is_err() {
+            tracing::warn!(node_id, "出站队列已满或已关闭，丢弃消息");
+        }
+        true
     }
 
     /// 吊销节点会话（重置 token / 删除节点）：通知连接以 `Unauthorized` 关闭，
@@ -456,8 +489,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn stale_conn_cannot_remove_or_update_new_session() {
         let r = Registry::new(LiveHub::new());
-        let (c1, mut k1) = r.connect(7, hello());
-        let (c2, _k2) = r.connect(7, hello());
+        let (c1, mut k1, _o1) = r.connect(7, hello());
+        let (c2, _k2, _o2) = r.connect(7, hello());
         assert!(k1.try_recv().is_ok(), "旧会话应收到 kick");
         assert!(!r.disconnect(7, c1));
         assert_eq!(r.snapshot().len(), 1);
@@ -471,7 +504,7 @@ pub(crate) mod tests {
         let live = LiveHub::new();
         let mut rx = live.subscribe();
         let r = Registry::new(live);
-        let (c, mut k) = r.connect(7, hello());
+        let (c, mut k, _o) = r.connect(7, hello());
         assert!(r.revoke(7));
         assert_eq!(k.try_recv().unwrap(), ErrorCode::Unauthorized);
         assert!(r.snapshot().is_empty());
@@ -560,8 +593,8 @@ pub(crate) mod tests {
         let live = LiveHub::new();
         let mut rx = live.subscribe();
         let r = Registry::new(live);
-        let (c1, _k1) = r.connect(7, hello());
-        let (c2, _k2) = r.connect(7, hello());
+        let (c1, _k1, _o1) = r.connect(7, hello());
+        let (c2, _k2, _o2) = r.connect(7, hello());
         assert!(!r.disconnect(7, c1));
         assert!(r.update(7, c2, report()));
         assert!(r.disconnect(7, c2));

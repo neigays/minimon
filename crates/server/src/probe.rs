@@ -2,7 +2,7 @@
 
 use crate::db::{DbError, ProbeTaskRow};
 use crate::state::AppState;
-use minimon_common::protocol::ProbeTask;
+use minimon_common::protocol::{ProbeTask, ServerMsg};
 use std::sync::{Arc, RwLock};
 
 /// 任务缓存；`lock` 串行化重载，避免乱序完成留下旧缓存。
@@ -29,6 +29,18 @@ impl AppState {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// 向在线节点下发当前全量任务；`only` 为受影响节点，`None` 为全部在线节点。
+    /// 任务列表在会话表锁内按当前缓存生成，保证同一节点的消息顺序与缓存新旧一致。
+    pub fn dispatch_probe_tasks(&self, only: Option<Vec<i64>>) {
+        let reg = self.registry();
+        let ids = only.unwrap_or_else(|| reg.online_ids());
+        for id in ids {
+            reg.send_with(id, || ServerMsg::ProbeTasks {
+                tasks: tasks_for_node(&self.probe_tasks(), id),
+            });
+        }
     }
 
     /// 从库重载任务缓存（读库 + 写缓存在同一把锁内）。
