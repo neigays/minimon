@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
 use minimon_common::protocol::{AgentMsg, ServerMsg};
+use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval, interval_at, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -17,6 +18,7 @@ use tracing::{debug, info, warn};
 use crate::backoff::Backoff;
 use crate::collect::Collector;
 use crate::config::AgentConfig;
+use crate::probe::ProbeScheduler;
 
 const WS_PATH: &str = "/api/agent/ws";
 const PING_INTERVAL: Duration = Duration::from_secs(15);
@@ -204,6 +206,10 @@ where
     ping_tick.tick().await; // 第一次立即触发，丢弃
     let mut last_rx = Instant::now();
     let mut healthy = false;
+    // 调度器随本次连接存在：任何退出路径（Drop）都会取消全部探测任务，
+    // 断线期间不产生结果；重连后由新的 ProbeTasks 重建。
+    let (probe_tx, mut probe_rx) = mpsc::channel(64);
+    let mut probes = ProbeScheduler::new(probe_tx);
 
     loop {
         tokio::select! {
@@ -217,6 +223,17 @@ where
                     Ok(()) => healthy = true,
                     Err(SendErr::Shutdown) => return Outcome::Shutdown,
                     Err(SendErr::Failed(e)) => return lost(healthy, format!("发送 report 失败: {e}")),
+                }
+            }
+            Some(res) = probe_rx.recv() => {
+                let msg = match serde_json::to_string(&AgentMsg::ProbeResult(res)) {
+                    Ok(s) => s,
+                    Err(e) => return lost(healthy, format!("序列化 probe_result 失败: {e}")),
+                };
+                match send_frame(ws, Message::text(msg), shutdown).await {
+                    Ok(()) => {}
+                    Err(SendErr::Shutdown) => return Outcome::Shutdown,
+                    Err(SendErr::Failed(e)) => return lost(healthy, format!("发送探测结果失败: {e}")),
                 }
             }
             _ = ping_tick.tick() => {
@@ -240,7 +257,8 @@ where
                             return lost(false, format!("server 报错: {code:?} {message}"));
                         }
                         Ok(ServerMsg::ProbeTasks { tasks }) => {
-                            info!(count = tasks.len(), "收到探测任务（M3 才执行，已忽略）");
+                            info!(count = tasks.len(), "收到探测任务");
+                            probes.replace(tasks);
                         }
                         Ok(ServerMsg::Welcome { .. }) => debug!("重复的 welcome，忽略"),
                         Err(e) => warn!("无法解析的 server 消息，已忽略: {e}"),

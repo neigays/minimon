@@ -4,6 +4,7 @@ pub mod backoff;
 pub mod client;
 pub mod collect;
 pub mod config;
+pub mod probe;
 
 pub use client::run;
 pub use config::AgentConfig;

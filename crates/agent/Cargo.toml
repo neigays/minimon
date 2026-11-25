@@ -14,7 +14,10 @@ rand = "0.10.4"
 serde.workspace = true
 serde_json.workspace = true
 sysinfo = { workspace = true }
-tokio = { version = "1.54.1", features = ["rt", "macros", "time", "signal", "net", "sync"] }
+tokio = { version = "1.54.1", features = ["rt", "macros", "time", "signal", "net", "sync", "io-util"] }
+# 与 tokio-tungstenite 同版本，HTTPS 探测复用同一套 rustls + webpki 根证书
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "0.26"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 # 显式选定 ring 作为 rustls 加密后端，否则 wss:// 首次握手时 panic
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
