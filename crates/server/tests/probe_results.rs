@@ -354,27 +354,3 @@ async fn card_affecting_task_edits_resync_live_clients() {
         }
     }
 }
-
-#[tokio::test]
-async fn result_after_node_deleted_is_dropped() {
-    let f = start(|_| {}).await;
-    let ck = login(f.port).await;
-    let (id, token) = add_node(&f, &ck).await;
-    let task = add_task(&f, &ck, 0, true, true).await;
-    let mut ws = agent(f.port, &token).await;
-    api(
-        &f,
-        &ck,
-        "DELETE",
-        &format!("/api/admin/nodes/{id}"),
-        Some(json!({})),
-    )
-    .await;
-    // 节点已删：旧连接上还在途的结果不得再进入最新值缓存。
-    send_result(&mut ws, result(task, None)).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(f.state.latest_probe(id).iter().all(|p| p.avg_ms.is_none()));
-    let path = f.db_path.clone();
-    let _dir = f.stop().await;
-    assert_eq!(raw_count(&path), 0);
-}

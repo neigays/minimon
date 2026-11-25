@@ -8,7 +8,7 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, header};
 use axum::response::Response;
-use minimon_common::protocol::{AgentMsg, ErrorCode, Hello, ServerMsg, check_version};
+use minimon_common::protocol::{AgentMsg, ErrorCode, Hello, ProbeResult, ServerMsg, check_version};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
@@ -314,13 +314,7 @@ async fn run(
                         }
                         Ok(AgentMsg::ProbeResult(r)) => {
                             let task_id = r.task_id;
-                            // 会话已被吊销或替换时，在途结果一律丢弃（不写最新值、不发事件、不入库）。
-                            let accepted = state
-                                .registry()
-                                .with_owner(node_id, conn_id, || {
-                                    state.accept_probe_result(node_id, r, now_ms())
-                                })
-                                .unwrap_or(false);
+                            let accepted = handle_probe_result(state, node_id, conn_id, r);
                             if !accepted {
                                 tracing::debug!(node_id, task_id, "丢弃无效或不属于该节点的探测结果");
                             }
@@ -333,5 +327,112 @@ async fn run(
                 }
             }
         }
+    }
+}
+
+/// 处理探测结果帧：仅当 `conn_id` 仍是该节点的当前会话时才接受
+/// （会话被吊销或替换后，在途结果不写最新值、不发事件、不入库）。
+pub(crate) fn handle_probe_result(
+    state: &AppState,
+    node_id: i64,
+    conn_id: u64,
+    r: ProbeResult,
+) -> bool {
+    state
+        .registry()
+        .with_owner(node_id, conn_id, || {
+            state.accept_probe_result(node_id, r, now_ms())
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ServerConfig;
+    use crate::db::{Db, NewProbeTask};
+    use minimon_common::protocol::ProbeKind;
+    use std::sync::Arc;
+
+    fn hello() -> Hello {
+        Hello {
+            v: 1,
+            agent_version: "t".into(),
+            hostname: "h".into(),
+            os: "linux".into(),
+            kernel: "k".into(),
+            arch: "x".into(),
+            cpu_model: "c".into(),
+            cpu_cores: 1,
+            mem_total: 1,
+            swap_total: 0,
+            disk_total: 1,
+            virtualization: None,
+        }
+    }
+
+    fn result(task_id: i64) -> ProbeResult {
+        ProbeResult {
+            task_id,
+            ts_ms: now_ms(),
+            sent: 1,
+            lost: 0,
+            avg_ms: Some(5.0),
+            min_ms: None,
+            max_ms: None,
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_result_from_non_owning_session_is_dropped() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let (node, _) = db.add_node("n").unwrap();
+        let task = db
+            .create_probe_task(&NewProbeTask {
+                name: "t".into(),
+                kind: ProbeKind::Tcp,
+                target: "h:1".into(),
+                interval_secs: 60,
+                samples: 1,
+                timeout_ms: 1000,
+                all_nodes: true,
+                node_ids: vec![],
+                show_on_card: true,
+                sort: None,
+            })
+            .unwrap();
+        let (state, _j) = AppState::new(db, ServerConfig::default()).unwrap();
+        let (old, _k1, _o1) = state.registry().connect(node.id, hello());
+        let mut rx = state.live().subscribe();
+        let (new, _k2, _o2) = state.registry().connect(node.id, hello());
+        while rx.try_recv().is_ok() {}
+
+        // 被替换的旧连接：丢弃，不写最新值、不发事件。
+        assert!(!handle_probe_result(&state, node.id, old, result(task.id)));
+        assert!(
+            state
+                .latest_probe(node.id)
+                .iter()
+                .all(|p| p.avg_ms.is_none())
+        );
+        assert!(rx.try_recv().is_err(), "不得发布探测事件");
+
+        // 吊销之后连当前连接也被丢弃。
+        state.registry().revoke(node.id);
+        while rx.try_recv().is_ok() {}
+        assert!(!handle_probe_result(&state, node.id, new, result(task.id)));
+        assert!(
+            state
+                .latest_probe(node.id)
+                .iter()
+                .all(|p| p.avg_ms.is_none())
+        );
+        assert!(rx.try_recv().is_err());
+
+        // 对照：当前会话的结果被接受。
+        let (cur, _k3, _o3) = state.registry().connect(node.id, hello());
+        assert!(handle_probe_result(&state, node.id, cur, result(task.id)));
+        assert_eq!(state.latest_probe(node.id)[0].avg_ms, Some(5.0));
     }
 }

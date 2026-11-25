@@ -28,29 +28,42 @@ pub(crate) fn spawn(state: AppState, mut shutdown: watch::Receiver<bool>) -> Joi
                 return;
             }
             let db = state.db.clone();
+            // 指标与探测两条链路互不影响：一边失败不跳过另一边的聚合与保留期清理。
             let round = tokio::task::spawn_blocking(move || {
                 let now = crate::db::now_ms();
-                let stats = db.rollup(now, ROLLUP_LAG_MS, BATCH_NODES)?;
-                let pruned = db.prune(now, raw_ms, m1_ms, m15_ms)?;
-                let sessions = db.prune_sessions(now)?;
-                let probe5 = db.rollup_probes(now, ROLLUP_LAG_MS, BATCH_NODES)?;
-                let probe_pruned = db.prune_probes(now, probe_raw_ms, probe_5m_ms)?;
-                Ok::<_, crate::db::DbError>((stats, pruned, sessions, probe5, probe_pruned))
+                let metrics = (|| {
+                    let stats = db.rollup(now, ROLLUP_LAG_MS, BATCH_NODES)?;
+                    let pruned = db.prune(now, raw_ms, m1_ms, m15_ms)?;
+                    let sessions = db.prune_sessions(now)?;
+                    Ok::<_, crate::db::DbError>((stats, pruned, sessions))
+                })();
+                let probes = (|| {
+                    let rolled = db.rollup_probes(now, ROLLUP_LAG_MS, BATCH_NODES)?;
+                    let pruned = db.prune_probes(now, probe_raw_ms, probe_5m_ms)?;
+                    Ok::<_, crate::db::DbError>((rolled, pruned))
+                })();
+                (metrics, probes)
             })
             .await;
             match round {
-                Ok(Ok((stats, pruned, sessions, probe5, probe_pruned))) => {
-                    tracing::debug!(
-                        m1 = stats.m1,
-                        m15 = stats.m15,
-                        pruned,
-                        sessions,
-                        probe5,
-                        probe_pruned,
-                        "rollup 完成"
-                    );
+                Ok((metrics, probes)) => {
+                    match metrics {
+                        Ok((stats, pruned, sessions)) => tracing::debug!(
+                            m1 = stats.m1,
+                            m15 = stats.m15,
+                            pruned,
+                            sessions,
+                            "rollup 完成"
+                        ),
+                        Err(e) => tracing::error!(error = %e, "rollup 失败"),
+                    }
+                    match probes {
+                        Ok((rolled, pruned)) => {
+                            tracing::debug!(rolled, pruned, "探测 rollup 完成")
+                        }
+                        Err(e) => tracing::error!(error = %e, "探测 rollup 失败"),
+                    }
                 }
-                Ok(Err(e)) => tracing::error!(error = %e, "rollup 失败"),
                 Err(e) => tracing::error!(error = %e, "rollup 任务异常"),
             }
             // 无论本轮 rollup 成败都重算（raw 尾巴仍在增长）。
