@@ -3,6 +3,7 @@ pub mod db;
 mod ingest;
 mod live;
 pub mod state;
+mod web;
 mod ws_agent;
 
 use anyhow::Context;
@@ -19,6 +20,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agent/ws", get(ws_agent::handler))
         .route("/api/nodes", get(live::nodes))
         .route("/api/live", get(live::ws))
+        .fallback(web::fallback)
         .with_state(state)
 }
 
