@@ -213,9 +213,12 @@ async fn timezone_change_recomputes_all() {
         serde_json::from_str::<Value>(&b).unwrap()["timezone"],
         "UTC"
     );
-    let v = wait_traffic(f.port, &cookie, |t| t["period_start_ms"] != sh).await;
-    let utc = v[0]["traffic"]["period_start_ms"].as_i64().unwrap();
-    assert_eq!(utc - sh, 8 * 3_600_000);
+    let now = now_ms();
+    let want_sh = period_bounds(1, &parse_tz("Asia/Shanghai").unwrap(), now).0;
+    let want_utc = period_bounds(1, &parse_tz("UTC").unwrap(), now).0;
+    let v = wait_traffic(f.port, &cookie, |t| t["period_start_ms"] == want_utc).await;
+    assert_eq!(v[0]["traffic"]["period_start_ms"], want_utc);
+    assert_eq!(sh, want_sh);
 }
 
 #[tokio::test]
@@ -267,6 +270,7 @@ async fn invalid_inputs_400() {
         let (c, b) = patch(f.port, &cookie, id, body.clone()).await;
         assert_eq!(c, 400, "{body} -> {b}");
     }
+    let before = wait_traffic(f.port, &cookie, |t| t.is_object()).await;
     let (c, _, b) = http(
         f.port,
         "PUT",
@@ -277,7 +281,26 @@ async fn invalid_inputs_400() {
     .await;
     assert_eq!(c, 400);
     assert!(b.contains("未知时区"), "{b}");
+    let (c, _, b) = http(
+        f.port,
+        "PUT",
+        "/api/admin/settings",
+        Some(&cookie),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(c, 400);
+    assert!(b.contains("没有要修改的设置"), "{b}");
     // 非法请求不留下副作用
+    let (_, _, b) = http(f.port, "GET", "/api/admin/settings", Some(&cookie), None).await;
+    assert_eq!(
+        serde_json::from_str::<Value>(&b).unwrap()["timezone"],
+        "Asia/Shanghai"
+    );
     let v = nodes(f.port, Some(&cookie)).await;
-    assert_eq!(v[0]["traffic"]["reset_day"].as_i64().unwrap_or(1), 1);
+    assert_eq!(v[0]["traffic"]["reset_day"], 1);
+    assert_eq!(
+        v[0]["traffic"]["period_start_ms"],
+        before[0]["traffic"]["period_start_ms"]
+    );
 }

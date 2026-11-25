@@ -358,6 +358,9 @@ async fn put_settings(
     State(state): State<AppState>,
     AppJson(req): AppJson<SettingsReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    if req.require_login.is_none() && req.timezone.is_none() {
+        return Err(ApiError::bad_request("没有要修改的设置"));
+    }
     // 先校验再写入：非法时区不留下半截修改。
     let tz = req
         .timezone

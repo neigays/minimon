@@ -17,7 +17,22 @@ impl Db {
         start_ms: i64,
         now_ms: i64,
     ) -> Result<(i64, i64), DbError> {
+        // 一个读事务 = 一份快照：rollup 在查询之间提交也不会造成漏算或重复。
         self.read(|c| {
+            let snap = c.unchecked_transaction()?;
+            traffic_in(&snap, node_id, start_ms, now_ms)
+        })
+    }
+}
+
+fn traffic_in(
+    c: &rusqlite::Connection,
+    node_id: i64,
+    start_ms: i64,
+    now_ms: i64,
+) -> Result<(i64, i64), DbError> {
+    {
+        {
             let (mut rx, mut tx): (i64, i64) = c.query_row(
                 "SELECT coalesce(sum(net_rx_delta), 0), coalesce(sum(net_tx_delta), 0) \
                  FROM metrics_15m WHERE node_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3",
@@ -89,7 +104,7 @@ impl Db {
                 prev = Some((r_b, t_b));
             }
             Ok((rx, tx))
-        })
+        }
     }
 }
 
