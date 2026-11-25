@@ -12,6 +12,10 @@ pub enum ConfigError {
     BadListen(#[from] std::net::AddrParseError),
     #[error("report_interval_secs 必须大于 0")]
     BadInterval,
+    #[error("public_url 必须以 http:// 或 https:// 开头")]
+    BadPublicUrl,
+    #[error("保留期（retention_*）必须大于 0")]
+    BadRetention,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -20,6 +24,13 @@ pub struct ServerConfig {
     pub listen: SocketAddr,
     pub data_dir: PathBuf,
     pub report_interval_secs: u32,
+    /// 对外访问地址（http:// 或 https://，末尾 `/` 会被去掉）。
+    pub public_url: Option<String>,
+    /// 反向代理传递真实客户端 IP 的请求头；配置后才信任代理头。
+    pub real_ip_header: Option<String>,
+    pub retention_raw_hours: u32,
+    pub retention_1m_days: u32,
+    pub retention_15m_days: u32,
 }
 
 impl Default for ServerConfig {
@@ -28,12 +39,18 @@ impl Default for ServerConfig {
             listen: SocketAddr::from(([0, 0, 0, 0], 25780)),
             data_dir: PathBuf::from("./data"),
             report_interval_secs: 3,
+            public_url: None,
+            real_ip_header: None,
+            retention_raw_hours: 24,
+            retention_1m_days: 7,
+            retention_15m_days: 90,
         }
     }
 }
 
 impl ServerConfig {
-    /// 加载 TOML（可选），再应用环境变量 `MINIMON_LISTEN` / `MINIMON_DATA_DIR`。
+    /// 加载 TOML（可选），再应用环境变量
+    /// `MINIMON_LISTEN` / `MINIMON_DATA_DIR` / `MINIMON_PUBLIC_URL` / `MINIMON_REAL_IP_HEADER`。
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
         let cfg = match path {
             Some(p) => {
@@ -43,19 +60,37 @@ impl ServerConfig {
             }
             None => ServerConfig::default(),
         };
-        let cfg = cfg.with_overrides(
+        let mut cfg = cfg.with_overrides(
             std::env::var("MINIMON_LISTEN").ok().as_deref(),
             std::env::var("MINIMON_DATA_DIR").ok().as_deref(),
         )?;
-        cfg.validate()?;
-        Ok(cfg)
+        if let Ok(v) = std::env::var("MINIMON_PUBLIC_URL") {
+            cfg.public_url = Some(v);
+        }
+        if let Ok(v) = std::env::var("MINIMON_REAL_IP_HEADER") {
+            cfg.real_ip_header = Some(v);
+        }
+        cfg.validated()
     }
 
-    fn validate(&self) -> Result<(), ConfigError> {
+    /// 校验并规范化（public_url 去掉末尾 `/`）。
+    pub fn validated(mut self) -> Result<Self, ConfigError> {
         if self.report_interval_secs == 0 {
             return Err(ConfigError::BadInterval);
         }
-        Ok(())
+        if self.retention_raw_hours == 0
+            || self.retention_1m_days == 0
+            || self.retention_15m_days == 0
+        {
+            return Err(ConfigError::BadRetention);
+        }
+        if let Some(u) = &self.public_url {
+            if !(u.starts_with("http://") || u.starts_with("https://")) {
+                return Err(ConfigError::BadPublicUrl);
+            }
+            self.public_url = Some(u.trim_end_matches('/').to_string());
+        }
+        Ok(self)
     }
 
     fn with_overrides(
@@ -104,8 +139,8 @@ mod tests {
     #[test]
     fn zero_interval_rejected() {
         let c: ServerConfig = toml::from_str("report_interval_secs = 0").unwrap();
-        assert!(matches!(c.validate(), Err(ConfigError::BadInterval)));
-        assert!(ServerConfig::default().validate().is_ok());
+        assert!(matches!(c.validated(), Err(ConfigError::BadInterval)));
+        assert!(ServerConfig::default().validated().is_ok());
     }
 
     #[test]
@@ -120,5 +155,45 @@ mod tests {
                 .with_overrides(Some("nope"), None)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn m2_defaults() {
+        let c = ServerConfig::default();
+        assert_eq!(
+            (
+                c.retention_raw_hours,
+                c.retention_1m_days,
+                c.retention_15m_days
+            ),
+            (24, 7, 90)
+        );
+        assert!(c.public_url.is_none() && c.real_ip_header.is_none());
+    }
+
+    #[test]
+    fn public_url_validated_and_trimmed() {
+        let c: ServerConfig = toml::from_str(r#"public_url = "https://m.example.com/""#).unwrap();
+        assert_eq!(
+            c.validated().unwrap().public_url.as_deref(),
+            Some("https://m.example.com")
+        );
+        let bad: ServerConfig = toml::from_str(r#"public_url = "m.example.com""#).unwrap();
+        assert!(matches!(bad.validated(), Err(ConfigError::BadPublicUrl)));
+    }
+
+    #[test]
+    fn zero_retention_rejected() {
+        for t in [
+            "retention_raw_hours = 0",
+            "retention_1m_days = 0",
+            "retention_15m_days = 0",
+        ] {
+            let c: ServerConfig = toml::from_str(t).unwrap();
+            assert!(
+                matches!(c.validated(), Err(ConfigError::BadRetention)),
+                "{t}"
+            );
+        }
     }
 }

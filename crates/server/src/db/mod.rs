@@ -41,7 +41,10 @@ fn lock(m: &Mutex<Connection>) -> Result<MutexGuard<'_, Connection>, DbError> {
 }
 
 fn migrate(conn: &mut Connection) -> Result<(), DbError> {
-    let migrations = Migrations::new(vec![M::up(include_str!("migrations/0001_init.sql"))]);
+    let migrations = Migrations::new(vec![
+        M::up(include_str!("migrations/0001_init.sql")),
+        M::up(include_str!("migrations/0002_m2.sql")),
+    ]);
     migrations.to_latest(conn)?;
     Ok(())
 }

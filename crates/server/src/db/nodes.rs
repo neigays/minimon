@@ -13,7 +13,16 @@ pub struct Node {
     pub hidden: bool,
     /// 最近一次 Hello（info_json）；从未上线或解析失败时为 None。
     pub info: Option<Hello>,
+    pub group: String,
+    pub region: String,
+    pub note: String,
+    pub last_ip: Option<String>,
+    pub last_seen_ms: Option<i64>,
+    pub created_ms: i64,
 }
+
+const NODE_COLS: &str =
+    "id, name, sort, hidden, info_json, grp, region, note, last_ip, last_seen_ms, created_ms";
 
 fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -53,6 +62,12 @@ fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
         sort: r.get(2)?,
         hidden: r.get::<_, i64>(3)? != 0,
         info: parse_info(r.get(0)?, r.get::<_, Option<String>>(4)?),
+        group: r.get(5)?,
+        region: r.get(6)?,
+        note: r.get(7)?,
+        last_ip: r.get(8)?,
+        last_seen_ms: r.get(9)?,
+        created_ms: r.get(10)?,
     })
 }
 
@@ -61,10 +76,11 @@ impl Db {
     pub fn add_node(&self, name: &str) -> Result<(Node, String), DbError> {
         let token = generate_token();
         let hash = hash_token(&token);
+        let created_ms = now_ms();
         let id = self.write(|c| {
             c.execute(
                 "INSERT INTO nodes (name, token_hash, created_ms) VALUES (?1, ?2, ?3)",
-                params![name, hash, now_ms()],
+                params![name, hash, created_ms],
             )?;
             Ok(c.last_insert_rowid())
         })?;
@@ -74,6 +90,12 @@ impl Db {
             sort: 0,
             hidden: false,
             info: None,
+            group: String::new(),
+            region: String::new(),
+            note: String::new(),
+            last_ip: None,
+            last_seen_ms: None,
+            created_ms,
         };
         Ok((node, token))
     }
@@ -81,7 +103,7 @@ impl Db {
     pub fn list_nodes(&self) -> Result<Vec<Node>, DbError> {
         self.read(|c| {
             let mut stmt =
-                c.prepare("SELECT id, name, sort, hidden, info_json FROM nodes ORDER BY sort, id")?;
+                c.prepare(&format!("SELECT {NODE_COLS} FROM nodes ORDER BY sort, id"))?;
             let rows = stmt.query_map([], row_to_node)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
@@ -91,7 +113,7 @@ impl Db {
         let hash = hash_token(token);
         self.read(|c| {
             Ok(c.query_row(
-                "SELECT id, name, sort, hidden, info_json FROM nodes WHERE token_hash = ?1",
+                &format!("SELECT {NODE_COLS} FROM nodes WHERE token_hash = ?1"),
                 [hash],
                 row_to_node,
             )
@@ -195,5 +217,38 @@ mod tests {
             })
             .unwrap();
         assert_eq!(serde_json::from_str::<Hello>(&json).unwrap(), hello());
+    }
+
+    #[test]
+    fn migration_0002_adds_node_columns_with_defaults() {
+        let db = Db::open_in_memory().unwrap();
+        let (n, _) = db.add_node("a").unwrap();
+        let got = db
+            .list_nodes()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == n.id)
+            .unwrap();
+        assert_eq!(
+            (got.group.as_str(), got.region.as_str(), got.note.as_str()),
+            ("", "", "")
+        );
+        assert!(got.last_ip.is_none() && got.last_seen_ms.is_none() && got.created_ms > 0);
+    }
+
+    #[test]
+    fn m2_tables_exist() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.raw_conn_for_test();
+        for t in ["metrics_1m", "metrics_15m", "admin", "sessions", "settings"] {
+            let n: i64 = c
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [t],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{t}");
+        }
     }
 }
