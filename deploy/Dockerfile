@@ -30,6 +30,6 @@ ENV MINIMON_LISTEN=0.0.0.0:25780 \
 VOLUME /data
 EXPOSE 25780
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-    CMD wget -qO /dev/null http://127.0.0.1:25780/api/nodes || exit 1
+    CMD wget -qO /dev/null http://127.0.0.1:25780/api/health || exit 1
 ENTRYPOINT ["minimon-server"]
 CMD ["serve"]

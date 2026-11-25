@@ -138,12 +138,12 @@ impl AppState {
         self.nodes().iter().any(|n| n.id == id)
     }
 
-    /// 从库重新加载节点缓存（阻塞 IO 放到 spawn_blocking，锁不跨 await）。
     /// 立即把入库缓冲写入库（删除节点前用，避免残留上报写回已删节点）。
     pub(crate) async fn flush_ingest(&self) {
         let _ = self.ingest.flush().await;
     }
 
+    /// 从库重新加载节点缓存（阻塞 IO 放到 spawn_blocking，锁不跨 await）。
     pub(crate) async fn reload_nodes(&self) -> Result<(), DbError> {
         // 锁跨 读库 + 写缓存：后开始的重载一定读到不早于先开始者的数据。
         let _serial = self.reload_lock.lock().await;

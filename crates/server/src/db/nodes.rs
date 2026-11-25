@@ -190,17 +190,24 @@ impl Db {
         let token = generate_token();
         let hash = hash_token(&token);
         let created_ms = now_ms();
-        let id = self.write(|c| {
-            c.execute(
-                "INSERT INTO nodes (name, token_hash, created_ms) VALUES (?1, ?2, ?3)",
-                params![name, hash, created_ms],
+        let (id, sort) = self.write(|c| {
+            let tx = c.transaction()?;
+            let sort: i64 =
+                tx.query_row("SELECT coalesce(max(sort) + 1, 0) FROM nodes", [], |r| {
+                    r.get(0)
+                })?;
+            tx.execute(
+                "INSERT INTO nodes (name, token_hash, created_ms, sort) VALUES (?1, ?2, ?3, ?4)",
+                params![name, hash, created_ms, sort],
             )?;
-            Ok(c.last_insert_rowid())
+            let id = tx.last_insert_rowid();
+            tx.commit()?;
+            Ok((id, sort))
         })?;
         let node = Node {
             id,
             name: name.to_string(),
-            sort: 0,
+            sort,
             hidden: false,
             info: None,
             group: String::new(),
@@ -471,5 +478,73 @@ mod tests {
                 .unwrap();
             assert_eq!(n, 1, "{t}");
         }
+    }
+
+    #[test]
+    fn add_node_sort_is_max_plus_one() {
+        let db = Db::open_in_memory().unwrap();
+        let (a, _) = db.add_node("a").unwrap();
+        let (b, _) = db.add_node("b").unwrap();
+        let (c, _) = db.add_node_with("c", "", "", "").unwrap();
+        assert_eq!((a.sort, b.sort, c.sort), (0, 1, 2));
+        let sorts: Vec<_> = db.list_nodes().unwrap().iter().map(|n| n.sort).collect();
+        assert_eq!(sorts, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn m1_database_migrates_with_data_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m1.db");
+        let info = r#"{"v":1,"agent_version":"0.1.0","hostname":"old-host","os":"linux","kernel":"6","arch":"x86_64","cpu_model":"cpu","cpu_cores":2,"mem_total":1,"swap_total":0,"disk_total":2,"virtualization":null}"#;
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(include_str!("migrations/0001_init.sql"))
+                .unwrap();
+            // rusqlite_migration 以 PRAGMA user_version 记录版本
+            c.pragma_update(None, "user_version", 1).unwrap();
+            c.execute(
+                "INSERT INTO nodes (id, name, token_hash, sort, created_ms, info_json) VALUES (7, 'old', ?1, 3, 1000, ?2)",
+                params![hash_token("old-token"), info],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO nodes (id, name, token_hash, created_ms) VALUES (9, 'old2', ?1, 1001)",
+                params![hash_token("t2")],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO metrics_raw (node_id, ts_ms, cpu) VALUES (7, 5000, 12.5)",
+                [],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let nodes = db.list_nodes().unwrap();
+        assert_eq!(nodes.len(), 2);
+        let n = db.node_by_token("old-token").unwrap().unwrap();
+        assert_eq!((n.id, n.name.as_str(), n.sort), (7, "old", 3));
+        assert_eq!(
+            n.info.as_ref().map(|i| i.hostname.as_str()),
+            Some("old-host")
+        );
+        // 新增列取默认值
+        assert!(!n.hidden);
+        assert_eq!(
+            (n.group.as_str(), n.region.as_str(), n.note.as_str()),
+            ("", "", "")
+        );
+        assert!(n.last_ip.is_none() && n.last_seen_ms.is_none());
+        let cpu: f64 = db
+            .raw_conn_for_test()
+            .query_row(
+                "SELECT cpu FROM metrics_raw WHERE node_id = 7 AND ts_ms = 5000",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cpu, 12.5);
+        let (new, _) = db.add_node("new").unwrap();
+        assert!(new.id > 9, "新节点 id {} 应大于旧最大 id", new.id);
+        assert_eq!(new.sort, 4);
     }
 }

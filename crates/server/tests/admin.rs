@@ -620,3 +620,21 @@ async fn non_numeric_ids_return_json_404() {
         "节点不存在或未公开"
     );
 }
+
+#[tokio::test]
+async fn health_is_200_even_with_require_login() {
+    let f = start(|_| {}).await;
+    let cookie = login(f.port).await;
+    let (code, _) = call(
+        &f,
+        "PUT",
+        "/api/admin/settings",
+        &cookie,
+        Some(json!({"require_login": true})),
+    )
+    .await;
+    assert_eq!(code, 200);
+    assert_eq!(nodes(&f, None).await.0, 401);
+    let (code, _, body) = http(f.port, "GET", "/api/health", None, None).await;
+    assert_eq!((code, body.as_str()), (200, r#"{"ok":true}"#));
+}

@@ -7,6 +7,7 @@ use crate::views::{self, NodeList};
 use axum::Json;
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
 use minimon_common::protocol::Report;
 use serde::Serialize;
@@ -44,11 +45,43 @@ pub async fn nodes(State(state): State<AppState>, viewer: Viewer) -> Result<Resp
     })
 }
 
+/// 请求带 Origin 但与 Host（或 public_url）不一致时，视为跨站发起的连接。
+fn origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true; // 非浏览器客户端不带 Origin，仍需 cookie
+    };
+    let Some(origin_host) = origin
+        .to_str()
+        .ok()
+        .and_then(|o| o.split_once("://").map(|(_, h)| h))
+        .map(|h| h.trim_end_matches('/').to_ascii_lowercase())
+    else {
+        return false;
+    };
+    let host_ok = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| h.eq_ignore_ascii_case(&origin_host));
+    let public_ok = state.cfg.public_url.as_deref().is_some_and(|u| {
+        u.split_once("://")
+            .is_some_and(|(_, h)| h.trim_end_matches('/').eq_ignore_ascii_case(&origin_host))
+    });
+    host_ok || public_ok
+}
+
 pub async fn ws(
     State(state): State<AppState>,
     viewer: Viewer,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
+    // 跨站 Origin 一律降级为访客视图，防止跨站 WebSocket 劫持读取管理数据。
+    let viewer = if matches!(viewer, Viewer::Admin { .. }) && !origin_allowed(&state, &headers) {
+        tracing::debug!("/api/live Origin 与 Host 不一致，按访客处理");
+        Viewer::Guest
+    } else {
+        viewer
+    };
     // 升级前拒绝：访客在整站登录开启时直接 401。
     gate(&state, &viewer)?;
     let admin = matches!(viewer, Viewer::Admin { .. });

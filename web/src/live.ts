@@ -105,6 +105,7 @@ function connect() {
     if (!user.value) loginRequired.value = loginRequiredAfterGuestSuccess()
   }
   sock.onmessage = (ev) => {
+    if (ws !== sock) return
     try {
       nodes.value = applyMsg(nodes.value, JSON.parse(ev.data as string) as LiveMsg)
       loaded.value = true

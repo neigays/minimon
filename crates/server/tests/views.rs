@@ -144,6 +144,19 @@ async fn live(
     Ok(tokio_tungstenite::connect_async(req).await?.0)
 }
 
+async fn live_origin(port: u16, cookie: Option<&str>, origin: Option<&str>) -> Ws {
+    let mut req = format!("ws://127.0.0.1:{port}/api/live")
+        .into_client_request()
+        .unwrap();
+    if let Some(c) = cookie {
+        req.headers_mut().insert("Cookie", c.parse().unwrap());
+    }
+    if let Some(o) = origin {
+        req.headers_mut().insert("Origin", o.parse().unwrap());
+    }
+    tokio_tungstenite::connect_async(req).await.unwrap().0
+}
+
 /// 预建数据目录：`n` 个节点；node 0 设为 hidden 与否由参数决定，note 带标记。返回 (目录, [(id, token)])。
 fn seed(n: usize, hide_first: bool) -> (tempfile::TempDir, Vec<(i64, String)>) {
     let dir = tempfile::tempdir().unwrap();
@@ -369,4 +382,45 @@ async fn resync_closes_guest_when_login_required_and_resends_for_admin() {
     })
     .await;
     assert!(closed.is_ok(), "访客连接应被关闭");
+}
+
+#[tokio::test]
+async fn live_origin_check_downgrades_cross_site_admin() {
+    let (dir, _) = seed(2, true);
+    let f = boot(dir).await;
+    let cookie = login(f.port).await;
+    let mut all = PUBLIC_KEYS.to_vec();
+    all.extend_from_slice(ADMIN_EXTRA);
+    // 跨站 Origin：降级为访客（公开字段集，无隐藏节点）
+    let mut w = live_origin(f.port, Some(&cookie), Some("https://evil.example.com")).await;
+    let snap = next_json(&mut w).await;
+    assert_eq!(snap["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(keys(&snap["nodes"][0]), sorted(PUBLIC_KEYS));
+    // 同源 Origin（Host 为 127.0.0.1:port，大小写不敏感）：管理员
+    let same = format!("http://127.0.0.1:{}", f.port);
+    let mut w = live_origin(f.port, Some(&cookie), Some(&same)).await;
+    let snap = next_json(&mut w).await;
+    assert_eq!(snap["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(keys(&snap["nodes"][0]), sorted(&all));
+    // 无 Origin（非浏览器）：管理员
+    let mut w = live_origin(f.port, Some(&cookie), None).await;
+    let snap = next_json(&mut w).await;
+    assert_eq!(keys(&snap["nodes"][0]), sorted(&all));
+}
+
+#[tokio::test]
+async fn live_origin_accepts_public_url_host() {
+    let (dir, _) = seed(2, true);
+    let f = start_at(
+        dir,
+        |_| {},
+        |c| {
+            c.public_url = Some("https://Mon.Example.com".into());
+        },
+    )
+    .await;
+    let cookie = login(f.port).await;
+    let mut w = live_origin(f.port, Some(&cookie), Some("https://mon.example.com")).await;
+    let snap = next_json(&mut w).await;
+    assert_eq!(snap["nodes"].as_array().unwrap().len(), 2);
 }

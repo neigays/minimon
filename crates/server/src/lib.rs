@@ -23,9 +23,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+async fn health() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({"ok": true}))
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/agent/ws", get(ws_agent::handler))
+        .route("/api/health", get(health))
         .route("/api/nodes", get(live::nodes))
         .route("/api/live", get(live::ws))
         .route("/api/nodes/{id}/history", get(history::get))
