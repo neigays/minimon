@@ -304,3 +304,27 @@ async fn invalid_inputs_400() {
         before[0]["traffic"]["period_start_ms"]
     );
 }
+
+#[tokio::test]
+async fn admin_node_exposes_stored_billing_config() {
+    let (f, id) = boot().await;
+    let cookie = login(f.port).await;
+    let (c, b) = patch(
+        f.port,
+        &cookie,
+        id,
+        json!({"traffic_quota": 7_000_000_000i64, "traffic_reset_day": 9, "traffic_mode": "max"}),
+    )
+    .await;
+    assert_eq!(c, 200, "{b}");
+    let v: Value = serde_json::from_str(&b).unwrap();
+    assert_eq!(v["traffic_quota"], 7_000_000_000i64);
+    assert_eq!(v["traffic_reset_day"], 9);
+    assert_eq!(v["traffic_mode"], "max");
+    // 只改备注：配置字段保持不变，且不依赖用量缓存
+    let (_, b) = patch(f.port, &cookie, id, json!({"note": "x"})).await;
+    let v: Value = serde_json::from_str(&b).unwrap();
+    assert_eq!(v["traffic_quota"], 7_000_000_000i64);
+    assert_eq!(v["traffic_reset_day"], 9);
+    assert_eq!(v["traffic_mode"], "max");
+}

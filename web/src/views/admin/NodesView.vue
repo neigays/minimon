@@ -6,9 +6,10 @@ import ConfirmButton from '../../components/ConfirmButton.vue'
 import StatusPill from '../../components/StatusPill.vue'
 import { useLive, type PublicNode } from '../../live'
 import { statusOf } from '../../status'
-import { bytesToQuotaInput, gbToBytes, MODE_LABELS, type TrafficMode } from '../../traffic'
+import { MODE_LABELS, type TrafficMode } from '../../traffic'
+import { blankForm, diffPatch, formFromNode } from '../../nodeForm'
 
-type AdminNode = PublicNode & { hidden: boolean; ip: string | null; note: string }
+type AdminNode = PublicNode & { hidden: boolean; ip: string | null; note: string; traffic_quota: number | null; traffic_reset_day: number; traffic_mode: TrafficMode }
 
 const { nodes: liveNodes, connected } = useLive()
 const list = ref<AdminNode[]>([])
@@ -109,7 +110,7 @@ function resetToken(n: AdminNode) {
 // ---------- 新增 / 编辑弹层（原生 dialog：自带焦点陷阱、Esc 关闭、关闭后还原焦点） ----------
 const dlg = ref<HTMLDialogElement | null>(null)
 const editing = ref<AdminNode | null>(null) // null 表示新增
-const blankForm = () => ({ name: '', group: '', region: '', note: '', quota: '', unit: 'GB' as 'GB' | 'TB', resetDay: '1', mode: 'sum' as TrafficMode, expire: '' })
+let seed = blankForm()
 const form = ref(blankForm())
 const formErr = ref('')
 
@@ -117,22 +118,8 @@ let opener: HTMLElement | null = null
 function openForm(n: AdminNode | null) {
   opener = document.activeElement as HTMLElement | null
   editing.value = n
-  form.value = blankForm()
-  if (n) {
-    const f = form.value
-    Object.assign(f, { name: n.name, group: n.group, region: n.region, note: n.note })
-    const t = n.traffic
-    if (t) {
-      if (t.quota) {
-        const q = bytesToQuotaInput(t.quota)
-        f.quota = String(q.value)
-        f.unit = q.unit
-      }
-      f.resetDay = String(t.reset_day)
-      f.mode = t.mode
-    }
-    f.expire = n.expire_date ?? ''
-  }
+  seed = n ? formFromNode(n) : blankForm()
+  form.value = { ...seed }
   formErr.value = ''
   dlg.value?.showModal()
 }
@@ -161,10 +148,10 @@ async function submitForm() {
     if (q && (!Number.isFinite(qv) || qv <= 0)) return void (formErr.value = '月额度需为大于 0 的数字，留空表示不限')
     const day = Number(f.resetDay)
     if (!Number.isInteger(day) || day < 1 || day > 31) return void (formErr.value = '重置日需为 1 到 31 的整数')
-    body.traffic_quota = q ? gbToBytes(qv, f.unit) : null
-    body.traffic_reset_day = day
-    body.traffic_mode = f.mode
-    body.expire_date = f.expire || null
+    // 只提交相对打开时有变化的字段，避免误改未动过的计费配置。
+    for (const k of Object.keys(body)) delete body[k]
+    Object.assign(body, diffPatch(seed, f))
+    if (Object.keys(body).length === 0) return void closeForm()
   }
   if (busy.value) return
   busy.value = true

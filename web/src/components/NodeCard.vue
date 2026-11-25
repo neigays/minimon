@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useAuth } from '../auth'
 import { formatRate, formatShort, formatUptime } from '../format'
 import type { PublicNode } from '../live'
 import { expireLevel, expireText, formatDecBytes, quotaPct } from '../traffic'
@@ -8,6 +9,7 @@ import Meter from './Meter.vue'
 import ProbeRow from './ProbeRow.vue'
 import StatusPill from './StatusPill.vue'
 
+const { user } = useAuth()
 const props = defineProps<{ node: PublicNode; connected: boolean; now: number }>()
 
 const status = computed(() => statusOf(props.node, props.connected))
@@ -19,8 +21,8 @@ const sub = computed(() => {
 })
 const memTotal = computed(() => props.node.mem_total)
 const diskTotal = computed(() => r.value?.disk_total || props.node.disk_total)
-const tr = computed(() => props.node.traffic ?? null)
-const days = computed(() => props.node.expire_days ?? null)
+const tr = computed(() => (user.value ? (props.node.traffic ?? null) : null))
+const days = computed(() => (user.value ? (props.node.expire_days ?? null) : null))
 const offlineText = computed(() => {
   if (!props.connected) return '与服务器的连接已中断'
   const seen = props.node.last_seen_ms

@@ -43,6 +43,10 @@ pub struct AdminNode {
     pub ip: Option<String>,
     pub note: String,
     pub created_ms: i64,
+    /// 已存的计费配置（与用量缓存无关，编辑表单以此为准）。
+    pub traffic_quota: Option<i64>,
+    pub traffic_reset_day: u8,
+    pub traffic_mode: crate::db::TrafficMode,
     pub traffic: Option<TrafficUsage>,
     pub expire_date: Option<String>,
     pub expire_days: Option<i64>,
@@ -168,6 +172,9 @@ fn admin_view(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> AdminNo
         ip: n.last_ip.clone(),
         note: n.note.clone(),
         created_ms: n.created_ms,
+        traffic_quota: n.traffic_quota,
+        traffic_reset_day: n.traffic_reset_day,
+        traffic_mode: n.traffic_mode,
         traffic: state.traffic(n.id),
         expire_date: n.expire_date.clone(),
         expire_days: n

@@ -135,7 +135,10 @@ async function submit() {
     name, kind: f.kind, target, interval_secs: interval, samples, timeout_ms: timeout,
     all_nodes: f.all, node_ids: f.all ? [] : f.ids, show_on_card: f.card,
   }
-  if (editing.value && Number.isInteger(sort)) body.sort = sort
+  if (editing.value) {
+    if (!Number.isInteger(sort)) return void (formErr.value = '排序需为整数')
+    body.sort = sort
+  }
   if (busy.value) return
   busy.value = true
   try {
