@@ -24,14 +24,17 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(10);
 /// 超过该时长没有收到任何帧（含 pong）则认为连接已死。
 const IDLE_LIMIT: Duration = Duration::from_secs(45);
+/// 单次发送的上限，防止半开连接上发送缓冲写满后永久阻塞。
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// 一次连接的结局。
 enum Outcome {
     Shutdown,
-    /// 连接失败或断开；`welcomed` 表示本次连接是否成功拿到过 Welcome。
+    /// 连接失败或断开；`healthy` 表示会话已证明健康（收到 Welcome 且成功发出首条 report，
+    /// 且不是以 server 的 Error 帧结束），只有健康会话之后才重置退避。
     Lost {
-        welcomed: bool,
+        healthy: bool,
         reason: String,
     },
 }
@@ -61,8 +64,8 @@ pub async fn run(cfg: AgentConfig, shutdown: impl Future<Output = ()>) -> anyhow
                 info!("收到退出信号，agent 退出");
                 return Ok(());
             }
-            Outcome::Lost { welcomed, reason } => {
-                if welcomed {
+            Outcome::Lost { healthy, reason } => {
+                if healthy {
                     backoff.reset();
                 }
                 let wait = backoff.next();
@@ -79,10 +82,35 @@ pub async fn run(cfg: AgentConfig, shutdown: impl Future<Output = ()>) -> anyhow
     }
 }
 
-fn lost(welcomed: bool, reason: impl Into<String>) -> Outcome {
+fn lost(healthy: bool, reason: impl Into<String>) -> Outcome {
     Outcome::Lost {
-        welcomed,
+        healthy,
         reason: reason.into(),
+    }
+}
+
+enum SendErr {
+    Shutdown,
+    Failed(String),
+}
+
+/// 带超时地发送一帧，且发送期间 shutdown 仍可抢占。
+async fn send_frame<S, W>(
+    ws: &mut W,
+    msg: Message,
+    shutdown: &mut std::pin::Pin<&mut S>,
+) -> Result<(), SendErr>
+where
+    S: Future<Output = ()>,
+    W: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    tokio::select! {
+        _ = &mut *shutdown => Err(SendErr::Shutdown),
+        r = timeout(SEND_TIMEOUT, ws.send(msg)) => match r {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(SendErr::Failed(e.to_string())),
+            Err(_) => Err(SendErr::Failed("发送超时".into())),
+        },
     }
 }
 
@@ -129,8 +157,10 @@ where
         Ok(s) => s,
         Err(e) => return lost(false, format!("序列化 hello 失败: {e}")),
     };
-    if let Err(e) = ws.send(Message::text(hello)).await {
-        return lost(false, format!("发送 hello 失败: {e}"));
+    match send_frame(ws, Message::text(hello), shutdown).await {
+        Ok(()) => {}
+        Err(SendErr::Shutdown) => return Outcome::Shutdown,
+        Err(SendErr::Failed(e)) => return lost(false, format!("发送 hello 失败: {e}")),
     }
 
     // 等待 Welcome（忽略期间的其它非致命帧）。
@@ -169,6 +199,7 @@ where
     ping_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     ping_tick.tick().await; // 第一次立即触发，丢弃
     let mut last_rx = Instant::now();
+    let mut healthy = false;
 
     loop {
         tokio::select! {
@@ -176,29 +207,33 @@ where
             _ = report_tick.tick() => {
                 let msg = match serde_json::to_string(&AgentMsg::Report(collector.report())) {
                     Ok(s) => s,
-                    Err(e) => return lost(true, format!("序列化 report 失败: {e}")),
+                    Err(e) => return lost(healthy, format!("序列化 report 失败: {e}")),
                 };
-                if let Err(e) = ws.send(Message::text(msg)).await {
-                    return lost(true, format!("发送 report 失败: {e}"));
+                match send_frame(ws, Message::text(msg), shutdown).await {
+                    Ok(()) => healthy = true,
+                    Err(SendErr::Shutdown) => return Outcome::Shutdown,
+                    Err(SendErr::Failed(e)) => return lost(healthy, format!("发送 report 失败: {e}")),
                 }
             }
             _ = ping_tick.tick() => {
                 if last_rx.elapsed() > IDLE_LIMIT {
-                    return lost(true, "长时间未收到 server 数据");
+                    return lost(healthy, "长时间未收到 server 数据");
                 }
-                if let Err(e) = ws.send(Message::Ping(Default::default())).await {
-                    return lost(true, format!("发送 ping 失败: {e}"));
+                match send_frame(ws, Message::Ping(Default::default()), shutdown).await {
+                    Ok(()) => {}
+                    Err(SendErr::Shutdown) => return Outcome::Shutdown,
+                    Err(SendErr::Failed(e)) => return lost(healthy, format!("发送 ping 失败: {e}")),
                 }
             }
             frame = ws.next() => {
                 last_rx = Instant::now();
                 match frame {
-                    None => return lost(true, "连接已断开"),
-                    Some(Err(e)) => return lost(true, format!("读取失败: {e}")),
-                    Some(Ok(Message::Close(_))) => return lost(true, "server 关闭了连接"),
+                    None => return lost(healthy, "连接已断开"),
+                    Some(Err(e)) => return lost(healthy, format!("读取失败: {e}")),
+                    Some(Ok(Message::Close(_))) => return lost(healthy, "server 关闭了连接"),
                     Some(Ok(Message::Text(t))) => match serde_json::from_str::<ServerMsg>(&t) {
                         Ok(ServerMsg::Error { code, message }) => {
-                            return lost(true, format!("server 报错: {code:?} {message}"));
+                            return lost(false, format!("server 报错: {code:?} {message}"));
                         }
                         Ok(ServerMsg::ProbeTasks { tasks }) => {
                             info!(count = tasks.len(), "收到探测任务（M3 才执行，已忽略）");

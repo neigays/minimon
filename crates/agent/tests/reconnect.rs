@@ -139,3 +139,50 @@ async fn survives_server_absent_at_startup() {
         .unwrap();
     assert!(res.is_ok());
 }
+
+#[tokio::test]
+async fn flapping_server_does_not_reset_backoff() {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    let mut c = cfg(addr);
+    c.backoff_base = Duration::from_millis(500);
+    c.backoff_max = Duration::from_secs(4);
+    let agent = tokio::spawn(run(c, async {
+        stop_rx.await.ok();
+    }));
+
+    // 每次连接：收到 hello，回 welcome 后立刻报错并关闭。
+    let mut at = Vec::new();
+    for _ in 0..3 {
+        let (mut ws, _, _) = tokio::time::timeout(Duration::from_secs(15), accept(&l))
+            .await
+            .unwrap();
+        at.push(Instant::now());
+        assert!(matches!(next_msg(&mut ws).await, Some(AgentMsg::Hello(_))));
+        ws.send(send_json(&ServerMsg::Welcome { interval_secs: 30 }))
+            .await
+            .unwrap();
+        ws.send(send_json(&ServerMsg::Error {
+            code: ErrorCode::Replaced,
+            message: "flap".into(),
+        }))
+        .await
+        .unwrap();
+        ws.close(None).await.ok();
+    }
+    // 第 1 次等待约 0.5s，第 2 次约 1s；若 welcome 就重置退避，第 2 次会回到约 0.5s。
+    assert!(at[1] - at[0] >= Duration::from_millis(400));
+    assert!(
+        at[2] - at[1] >= Duration::from_millis(800),
+        "退避被重置: {:?}",
+        at[2] - at[1]
+    );
+
+    stop_tx.send(()).unwrap();
+    let res = tokio::time::timeout(Duration::from_secs(5), agent)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(res.is_ok());
+}
