@@ -13,7 +13,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 pub use aggregate::ROLLUP_LAG_MS;
-pub use nodes::{Node, NodePatch};
+pub use nodes::{Node, NodePatch, TrafficMode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -55,6 +55,7 @@ fn migrate(conn: &mut Connection) -> Result<(), DbError> {
         M::up(include_str!("migrations/0001_init.sql")),
         M::up(include_str!("migrations/0002_m2.sql")),
         M::up(include_str!("migrations/0003_nodes_autoincrement.sql")),
+        M::up(include_str!("migrations/0004_m3.sql")),
     ]);
     migrations.to_latest(conn)?;
     Ok(())

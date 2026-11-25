@@ -8,6 +8,7 @@ mod error;
 mod history;
 mod ingest;
 mod live;
+pub mod period;
 mod rollup;
 pub mod state;
 mod views;

@@ -5,6 +5,37 @@ use std::fmt::Write;
 
 use super::{Db, DbError, now_ms};
 
+/// 月流量计费口径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrafficMode {
+    Rx,
+    Tx,
+    Sum,
+    Max,
+}
+
+impl TrafficMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrafficMode::Rx => "rx",
+            TrafficMode::Tx => "tx",
+            TrafficMode::Sum => "sum",
+            TrafficMode::Max => "max",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "rx" => Some(TrafficMode::Rx),
+            "tx" => Some(TrafficMode::Tx),
+            "sum" => Some(TrafficMode::Sum),
+            "max" => Some(TrafficMode::Max),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub id: i64,
@@ -19,10 +50,17 @@ pub struct Node {
     pub last_ip: Option<String>,
     pub last_seen_ms: Option<i64>,
     pub created_ms: i64,
+    /// 月流量额度（字节，十进制单位换算后）；None 表示不限。
+    pub traffic_quota: Option<i64>,
+    /// 账期重置日 1–31。
+    pub traffic_reset_day: u8,
+    pub traffic_mode: TrafficMode,
+    /// 到期日 `YYYY-MM-DD`（按全局时区理解）。
+    pub expire_date: Option<String>,
 }
 
-const NODE_COLS: &str =
-    "id, name, sort, hidden, info_json, grp, region, note, last_ip, last_seen_ms, created_ms";
+const NODE_COLS: &str = "id, name, sort, hidden, info_json, grp, region, note, last_ip, \
+     last_seen_ms, created_ms, traffic_quota, traffic_reset_day, traffic_mode, expire_date";
 
 fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -68,6 +106,13 @@ fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
         last_ip: r.get(8)?,
         last_seen_ms: r.get(9)?,
         created_ms: r.get(10)?,
+        traffic_quota: r.get(11)?,
+        traffic_reset_day: r.get::<_, i64>(12)?.clamp(1, 31) as u8,
+        traffic_mode: {
+            let m: String = r.get(13)?;
+            TrafficMode::parse(&m).unwrap_or(TrafficMode::Sum)
+        },
+        expire_date: r.get(14)?,
     })
 }
 
@@ -120,6 +165,10 @@ impl Db {
             last_ip: None,
             last_seen_ms: None,
             created_ms,
+            traffic_quota: None,
+            traffic_reset_day: 1,
+            traffic_mode: TrafficMode::Sum,
+            expire_date: None,
         };
         Ok((node, token))
     }
@@ -216,6 +265,10 @@ impl Db {
             last_ip: None,
             last_seen_ms: None,
             created_ms,
+            traffic_quota: None,
+            traffic_reset_day: 1,
+            traffic_mode: TrafficMode::Sum,
+            expire_date: None,
         };
         Ok((node, token))
     }
@@ -533,6 +586,11 @@ mod tests {
             (n.group.as_str(), n.region.as_str(), n.note.as_str()),
             ("", "", "")
         );
+        assert_eq!(
+            (n.traffic_quota, n.traffic_reset_day, n.traffic_mode),
+            (None, 1, TrafficMode::Sum)
+        );
+        assert_eq!(n.expire_date, None);
         assert!(n.last_ip.is_none() && n.last_seen_ms.is_none());
         let cpu: f64 = db
             .raw_conn_for_test()
@@ -546,5 +604,47 @@ mod tests {
         let (new, _) = db.add_node("new").unwrap();
         assert!(new.id > 9, "新节点 id {} 应大于旧最大 id", new.id);
         assert_eq!(new.sort, 4);
+    }
+
+    #[test]
+    fn node_m3_defaults() {
+        let db = Db::open_in_memory().unwrap();
+        let (n, _) = db.add_node("a").unwrap();
+        assert_eq!(n.traffic_quota, None);
+        assert_eq!(n.traffic_reset_day, 1);
+        assert_eq!(n.traffic_mode, TrafficMode::Sum);
+        assert_eq!(n.expire_date, None);
+        assert_eq!(db.list_nodes().unwrap()[0], n);
+        let (g, _) = db.add_node_with("b", "g", "r", "x").unwrap();
+        assert_eq!(db.list_nodes().unwrap()[1], g);
+    }
+
+    #[test]
+    fn traffic_mode_serde_and_db_strings() {
+        for (m, s) in [
+            (TrafficMode::Rx, "rx"),
+            (TrafficMode::Tx, "tx"),
+            (TrafficMode::Sum, "sum"),
+            (TrafficMode::Max, "max"),
+        ] {
+            assert_eq!(m.as_str(), s);
+            assert_eq!(TrafficMode::parse(s), Some(m));
+            assert_eq!(serde_json::to_string(&m).unwrap(), format!("\"{s}\""));
+        }
+        assert_eq!(TrafficMode::parse("bogus"), None);
+    }
+
+    #[test]
+    fn migration_0004_creates_probe_tables_and_keeps_data() {
+        let db = Db::open_in_memory().unwrap();
+        let (n, _) = db.add_node("a").unwrap();
+        let c = db.raw_conn_for_test();
+        for t in ["probe_tasks", "probe_task_nodes", "probe_raw", "probe_5m"] {
+            let cnt: i64 = c
+                .query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(cnt, 0, "{t}");
+        }
+        assert_eq!(n.id, 1);
     }
 }

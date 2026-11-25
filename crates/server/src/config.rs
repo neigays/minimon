@@ -31,6 +31,8 @@ pub struct ServerConfig {
     pub retention_raw_hours: u32,
     pub retention_1m_days: u32,
     pub retention_15m_days: u32,
+    pub retention_probe_raw_hours: u32,
+    pub retention_probe_5m_days: u32,
 }
 
 impl Default for ServerConfig {
@@ -44,6 +46,8 @@ impl Default for ServerConfig {
             retention_raw_hours: 24,
             retention_1m_days: 7,
             retention_15m_days: 90,
+            retention_probe_raw_hours: 24,
+            retention_probe_5m_days: 30,
         }
     }
 }
@@ -81,6 +85,8 @@ impl ServerConfig {
         if self.retention_raw_hours == 0
             || self.retention_1m_days == 0
             || self.retention_15m_days == 0
+            || self.retention_probe_raw_hours == 0
+            || self.retention_probe_5m_days == 0
         {
             return Err(ConfigError::BadRetention);
         }
@@ -175,6 +181,25 @@ mod tests {
             (24, 7, 90)
         );
         assert!(c.public_url.is_none() && c.real_ip_header.is_none());
+    }
+
+    #[test]
+    fn m3_probe_retention_defaults_and_validation() {
+        let c = ServerConfig::default();
+        assert_eq!(
+            (c.retention_probe_raw_hours, c.retention_probe_5m_days),
+            (24, 30)
+        );
+        for t in [
+            "retention_probe_raw_hours = 0",
+            "retention_probe_5m_days = 0",
+        ] {
+            let c: ServerConfig = toml::from_str(t).unwrap();
+            assert!(
+                matches!(c.validated(), Err(ConfigError::BadRetention)),
+                "{t}"
+            );
+        }
     }
 
     #[test]

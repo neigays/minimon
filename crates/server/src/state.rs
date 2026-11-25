@@ -4,6 +4,7 @@ use crate::config::ServerConfig;
 use crate::db::{Db, DbError, Node};
 pub use crate::ingest::IngestHandle;
 use crate::ingest::{DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH, IngestJoin};
+use crate::period::{DEFAULT_TZ, Tz, parse_tz};
 use minimon_common::protocol::{ErrorCode, Hello, Report};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -33,6 +34,8 @@ pub struct AppState {
     /// 串行化节点缓存重载，避免并发重载乱序完成留下旧缓存。
     reload_lock: Arc<tokio::sync::Mutex<()>>,
     require_login: Arc<AtomicBool>,
+    /// 全局时区（账期与到期日计算）；启动时从 `settings.timezone` 加载。
+    timezone: Arc<RwLock<Tz>>,
     pub(crate) ingest: IngestHandle,
     pub(crate) cfg: Arc<ServerConfig>,
     shutdown: Arc<watch::Sender<bool>>,
@@ -40,6 +43,11 @@ pub struct AppState {
     pub(crate) login_limiter: Arc<crate::auth::LoginLimiter>,
     /// 限制并发 argon2 哈希 / 校验数（每个约 19 MiB）。
     pub(crate) hash_gate: Arc<tokio::sync::Semaphore>,
+}
+
+fn default_tz() -> Tz {
+    // DEFAULT_TZ 是内置库中的常量；万一缺失退化为 UTC，不 panic。
+    parse_tz(DEFAULT_TZ).unwrap_or(Tz::UTC)
 }
 
 /// 活跃 WS 会话计数。upgrade 后的连接不受 axum 优雅停机管理，需自行等待。
@@ -68,6 +76,13 @@ impl AppState {
         let last_known: LastKnown = Arc::new(RwLock::new(db.last_reports()?));
         // 缺省（未设置）表示关闭。
         let require_login = db.get_setting("require_login")?.as_deref() == Some("1");
+        let timezone = match db.get_setting("timezone")? {
+            None => default_tz(),
+            Some(name) => parse_tz(&name).unwrap_or_else(|| {
+                tracing::warn!(timezone = %name, "settings.timezone 无效，使用默认时区");
+                default_tz()
+            }),
+        };
         let (ingest, join) =
             IngestHandle::spawn(db.clone(), DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH)?;
         let state = AppState {
@@ -78,6 +93,7 @@ impl AppState {
             last_known,
             reload_lock: Arc::default(),
             require_login: Arc::new(AtomicBool::new(require_login)),
+            timezone: Arc::new(RwLock::new(timezone)),
             ingest,
             cfg: Arc::new(cfg),
             shutdown: Arc::new(watch::channel(false).0),
@@ -126,6 +142,18 @@ impl AppState {
 
     pub fn set_require_login(&self, on: bool) {
         self.require_login.store(on, Ordering::SeqCst);
+    }
+
+    /// 当前全局时区。
+    pub fn timezone(&self) -> Tz {
+        self.timezone
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn set_timezone(&self, tz: Tz) {
+        *self.timezone.write().unwrap_or_else(|e| e.into_inner()) = tz;
     }
 
     /// 要求所有 live 会话按当前身份与设置重新同步（重发快照或关闭）。
@@ -437,6 +465,23 @@ pub(crate) mod tests {
     fn app_state() -> AppState {
         let db = Arc::new(Db::open_in_memory().unwrap());
         AppState::new(db, ServerConfig::default()).unwrap().0
+    }
+
+    #[tokio::test]
+    async fn timezone_defaults_and_persists_across_restart() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let (st, _j) = AppState::new(db.clone(), ServerConfig::default()).unwrap();
+        assert_eq!(st.timezone(), crate::period::parse_tz(DEFAULT_TZ).unwrap());
+        let utc = crate::period::parse_tz("UTC").unwrap();
+        st.set_timezone(utc.clone());
+        assert_eq!(st.timezone(), utc);
+        db.set_setting("timezone", "UTC").unwrap();
+        let (st2, _j2) = AppState::new(db.clone(), ServerConfig::default()).unwrap();
+        assert_eq!(st2.timezone(), utc);
+        // 非法值回落到默认
+        db.set_setting("timezone", "Mars/Olympus").unwrap();
+        let (st3, _j3) = AppState::new(db, ServerConfig::default()).unwrap();
+        assert_eq!(st3.timezone(), crate::period::parse_tz(DEFAULT_TZ).unwrap());
     }
 
     #[tokio::test]
