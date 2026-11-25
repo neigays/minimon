@@ -1,6 +1,7 @@
 mod admin;
 mod auth;
 mod auth_api;
+pub mod clock;
 pub mod config;
 pub mod db;
 mod error;

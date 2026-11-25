@@ -116,7 +116,7 @@ async fn shutdown_with_connected_agent_closes_it_and_flushes() {
     let c = rusqlite::Connection::open(&path).unwrap();
     let n: i64 = c
         .query_row(
-            "SELECT count(*) FROM metrics_raw WHERE node_id=?1 AND ts_ms=42",
+            "SELECT count(*) FROM metrics_raw WHERE node_id=?1", // ts 已按时间偏差规则归一化，只按节点计数
             [node.id],
             |r| r.get(0),
         )

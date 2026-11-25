@@ -1,5 +1,7 @@
 //! `GET /api/agent/ws`：agent 接入。
 
+use crate::clock::normalize_ts;
+use crate::db::now_ms;
 use crate::state::AppState;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
@@ -241,6 +243,8 @@ async fn run(
     let mut ping = interval(PING_INTERVAL);
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_seen = Instant::now();
+    // 时间偏差告警每个连接只记录一次。
+    let mut skew_warned = false;
     loop {
         tokio::select! {
             _ = async { let _ = shutdown.wait_for(|v| *v).await; } => {
@@ -271,7 +275,19 @@ async fn run(
                 last_seen = Instant::now();
                 match msg {
                     Message::Text(t) => match serde_json::from_str::<AgentMsg>(&t) {
-                        Ok(AgentMsg::Report(report)) => {
+                        Ok(AgentMsg::Report(mut report)) => {
+                            let (ts, replaced) = normalize_ts(report.ts_ms, now_ms());
+                            if replaced {
+                                if !skew_warned {
+                                    skew_warned = true;
+                                    tracing::warn!(
+                                        node_id,
+                                        skew_secs = (report.ts_ms - ts) / 1000,
+                                        "agent 时间与服务器相差超过 10 秒，改用接收时间"
+                                    );
+                                }
+                                report.ts_ms = ts;
+                            }
                             if !state.registry().update(node_id, conn_id, report.clone()) {
                                 // 会话已不在表中（kick 与 recv 同时就绪）：以 kick 带的原因为准，
                                 // 吊销与替换的提示不同。

@@ -175,7 +175,14 @@ async fn hello_gets_welcome_and_report_updates_registry() {
     let snap = fx.state.registry().snapshot();
     assert_eq!(snap.len(), 1);
     assert_eq!(snap[0].0, fx.node_id);
-    assert_eq!(snap[0].1, Some(report()));
+    // report() 的 ts_ms = 1 偏差远超 10 秒，应被替换为 server 接收时间，其余字段不变。
+    let latest = snap[0].1.clone().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    assert!((latest.ts_ms - now).abs() < 2_000);
+    assert_eq!(Report { ts_ms: 1, ..latest }, report());
 }
 
 #[tokio::test]
@@ -256,4 +263,84 @@ async fn incompatible_version_with_unparseable_hello_shape() {
         })
     ));
     assert!(recv(&mut ws).await.is_none());
+}
+
+/// 基于磁盘库的夹具：停机时 flush 入库，之后可直接读 metrics_raw。
+async fn start_on_disk(
+    dir: &tempfile::TempDir,
+) -> (
+    AppState,
+    u16,
+    String,
+    i64,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
+    let db = Arc::new(Db::open(&dir.path().join("t.db")).unwrap());
+    let (node, token) = db.add_node("n1").unwrap();
+    let (state, ingest) = AppState::new(db, ServerConfig::default()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let handle = tokio::spawn(minimon_server::serve_on(
+        listener,
+        state.clone(),
+        ingest,
+        async move {
+            let _ = rx.await;
+        },
+    ));
+    (state, port, token, node.id, tx, handle)
+}
+
+#[tokio::test]
+async fn skewed_report_is_stored_with_server_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, port, token, node_id, shutdown, handle) = start_on_disk(&dir).await;
+    let mut live = state.live().subscribe();
+    let mut ws = connect(port, &token).await;
+    send(&mut ws, &AgentMsg::Hello(hello(PROTOCOL_VERSION))).await;
+    assert!(matches!(
+        recv(&mut ws).await,
+        Some(ServerMsg::Welcome { .. })
+    ));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let skewed = Report {
+        ts_ms: now - 3_600_000,
+        ..report()
+    };
+    send(&mut ws, &AgentMsg::Report(skewed)).await;
+    assert!(matches!(
+        next_event(&mut live).await,
+        LiveEvent::Online { .. }
+    ));
+    assert!(matches!(
+        next_event(&mut live).await,
+        LiveEvent::Report { node_id: id, .. } if id == node_id
+    ));
+    let latest = state.registry().snapshot()[0].1.clone().unwrap();
+    assert!(
+        (latest.ts_ms - now).abs() < 2_000,
+        "registry ts 应为 server 时间，实际 {}",
+        latest.ts_ms
+    );
+
+    // 停机会 flush 入库队列。
+    let _ = shutdown.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(15), handle).await;
+    let conn = rusqlite::Connection::open(dir.path().join("t.db")).unwrap();
+    let stored: i64 = conn
+        .query_row(
+            "SELECT ts_ms FROM metrics_raw WHERE node_id = ?1",
+            [node_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        (stored - now).abs() < 2_000,
+        "入库 ts 应为 server 时间，实际 {stored}"
+    );
 }
