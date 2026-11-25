@@ -26,8 +26,6 @@ impl ApiError {
         Self::new(StatusCode::UNAUTHORIZED, msg)
     }
 
-    /// 后续任务（节点历史等）使用。
-    #[allow(dead_code)]
     pub fn not_found(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, msg)
     }

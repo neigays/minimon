@@ -29,7 +29,7 @@ enum LiveMsg {
 }
 
 /// 整站登录开启时访客不得读取任何节点数据。
-fn gate(state: &AppState, viewer: &Viewer) -> Result<(), ApiError> {
+pub(crate) fn gate(state: &AppState, viewer: &Viewer) -> Result<(), ApiError> {
     if matches!(viewer, Viewer::Guest) && state.require_login() {
         return Err(ApiError::unauthorized("请先登录"));
     }

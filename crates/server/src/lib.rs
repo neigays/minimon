@@ -3,6 +3,7 @@ mod auth_api;
 pub mod config;
 pub mod db;
 mod error;
+mod history;
 mod ingest;
 mod live;
 mod rollup;
@@ -26,6 +27,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agent/ws", get(ws_agent::handler))
         .route("/api/nodes", get(live::nodes))
         .route("/api/live", get(live::ws))
+        .route("/api/nodes/{id}/history", get(history::get))
         .merge(auth_api::routes())
         .fallback(web::fallback)
         .layer(axum::middleware::from_fn(auth::require_json))

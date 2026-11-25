@@ -1,5 +1,6 @@
 mod aggregate;
 pub mod auth;
+pub mod history;
 mod last_report;
 mod metrics;
 pub mod nodes;
