@@ -4,7 +4,7 @@ use crate::config::ServerConfig;
 use crate::db::{Db, DbError, Node};
 pub use crate::ingest::IngestHandle;
 use crate::ingest::{DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH, IngestJoin};
-use minimon_common::protocol::{Hello, Report};
+use minimon_common::protocol::{ErrorCode, Hello, Report};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -108,6 +108,14 @@ impl AppState {
             .clone()
     }
 
+    /// 节点被删除：丢弃其内存中的最后已知上报（SQLite 的 id 会被复用，不能让新节点继承）。
+    pub(crate) fn forget_node(&self, id: i64) {
+        self.last_known
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+    }
+
     /// 整站登录是否开启。
     pub fn require_login(&self) -> bool {
         self.require_login.load(Ordering::SeqCst)
@@ -128,6 +136,11 @@ impl AppState {
     }
 
     /// 从库重新加载节点缓存（阻塞 IO 放到 spawn_blocking，锁不跨 await）。
+    /// 立即把入库缓冲写入库（删除节点前用，避免残留上报写回已删节点）。
+    pub(crate) async fn flush_ingest(&self) {
+        let _ = self.ingest.flush().await;
+    }
+
     pub(crate) async fn reload_nodes(&self) -> Result<(), DbError> {
         let db = self.db.clone();
         let list = tokio::task::spawn_blocking(move || db.list_nodes())
@@ -180,7 +193,7 @@ struct Session {
     conn_id: u64,
     latest: Option<Report>,
     info: Hello,
-    kick: oneshot::Sender<()>,
+    kick: oneshot::Sender<ErrorCode>,
 }
 
 /// 在线节点表。锁只在内存操作期间持有，不跨 await。
@@ -209,7 +222,7 @@ impl Registry {
     }
 
     /// 注册新会话（发布 Online）。已有会话时先通知其退出再替换。
-    pub fn connect(&self, node_id: i64, info: Hello) -> (u64, oneshot::Receiver<()>) {
+    pub fn connect(&self, node_id: i64, info: Hello) -> (u64, oneshot::Receiver<ErrorCode>) {
         let conn_id = self.next_conn.fetch_add(1, Ordering::Relaxed) + 1;
         let (kick, kick_rx) = oneshot::channel();
         let session = Session {
@@ -220,11 +233,25 @@ impl Registry {
         };
         let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         if let Some(old) = map.insert(node_id, session) {
-            let _ = old.kick.send(());
+            let _ = old.kick.send(ErrorCode::Replaced);
         }
         self.live.publish(LiveEvent::Online { node_id });
         drop(map);
         (conn_id, kick_rx)
+    }
+
+    /// 吊销节点会话（重置 token / 删除节点）：通知连接以 `Unauthorized` 关闭，
+    /// 移除会话并发布 Offline（持锁，顺序与表状态一致）。返回是否有会话被移除。
+    pub fn revoke(&self, node_id: i64) -> bool {
+        let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+        match map.remove(&node_id) {
+            Some(s) => {
+                let _ = s.kick.send(ErrorCode::Unauthorized);
+                self.live.publish(LiveEvent::Offline { node_id });
+                true
+            }
+            None => false,
+        }
     }
 
     /// 更新最新上报并发布 Report；会话已被替换时返回 false。
@@ -340,6 +367,24 @@ pub(crate) mod tests {
         assert!(r.info(7).is_some());
         assert!(r.disconnect(7, c2));
         assert!(r.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoke_kicks_with_unauthorized_and_publishes_offline() {
+        let live = LiveHub::new();
+        let mut rx = live.subscribe();
+        let r = Registry::new(live);
+        let (c, mut k) = r.connect(7, hello());
+        assert!(r.revoke(7));
+        assert_eq!(k.try_recv().unwrap(), ErrorCode::Unauthorized);
+        assert!(r.snapshot().is_empty());
+        assert!(!r.disconnect(7, c), "会话已移除，旧连接不得再发 Offline");
+        assert!(!r.revoke(7));
+        let evs: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(matches!(
+            evs.as_slice(),
+            [LiveEvent::Online { .. }, LiveEvent::Offline { .. }]
+        ));
     }
 
     #[tokio::test]

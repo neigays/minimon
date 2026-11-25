@@ -335,7 +335,9 @@ async fn public_output_key_allowlist() {
     let snap = next_json(&mut l).await;
     assert_eq!(keys(&snap["nodes"][0]), node_keys);
     let mut a = agent(f.port, &f.tokens[0].1).await;
-    let _online = next_json(&mut l).await;
+    let online = next_json(&mut l).await;
+    assert_eq!(keys(&online), sorted(&["type", "node_id"]));
+    assert_eq!(online["type"], "online");
     send(&mut a, &AgentMsg::Report(report(3.0))).await;
     let r = next_json(&mut l).await;
     assert_eq!(keys(&r), sorted(&["type", "node_id", "report"]));
@@ -351,6 +353,11 @@ async fn public_output_key_allowlist() {
     }
     assert_eq!(keys(&v[0]), node_keys);
     assert_eq!(keys(&v[0]["latest"]), report_keys);
+    a.close(None).await.unwrap();
+    drop(a);
+    let off = next_json(&mut l).await;
+    assert_eq!(off["type"], "offline");
+    assert_eq!(keys(&off), sorted(&["type", "node_id"]));
 }
 
 #[tokio::test]

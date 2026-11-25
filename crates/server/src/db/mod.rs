@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-pub use nodes::Node;
+pub use nodes::{Node, NodePatch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {

@@ -1,3 +1,4 @@
+mod admin;
 mod auth;
 mod auth_api;
 pub mod config;
@@ -29,6 +30,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/live", get(live::ws))
         .route("/api/nodes/{id}/history", get(history::get))
         .merge(auth_api::routes())
+        .merge(admin::routes())
         .fallback(web::fallback)
         .layer(axum::middleware::from_fn(auth::require_json))
         .with_state(state)

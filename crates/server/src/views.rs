@@ -77,14 +77,24 @@ impl Snapshot {
     }
 }
 
+/// 合并库里与最近上报的时间；不得晚于服务器当前时间（agent 时钟超前时不外泄未来时间）。
+fn merge_last_seen(db: Option<i64>, report: Option<i64>, now: i64) -> Option<i64> {
+    let merged = match (db, report) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    merged.map(|t| t.min(now))
+}
+
 fn base(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> (PublicNode, Option<Hello>) {
     // 在线时优先用本次连接的最新 Hello，否则用库里保存的。
     let info = state.registry().info(n.id).or_else(|| n.info.clone());
     let latest = snap.last.get(&n.id).cloned();
-    let last_seen_ms = match (n.last_seen_ms, latest.as_ref().map(|r| r.ts_ms)) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        (a, b) => a.or(b),
-    };
+    let last_seen_ms = merge_last_seen(
+        n.last_seen_ms,
+        latest.as_ref().map(|r| r.ts_ms),
+        crate::db::now_ms(),
+    );
     let p = PublicNode {
         id: n.id,
         name: n.name.clone(),
@@ -123,18 +133,41 @@ pub fn admin_nodes(state: &AppState) -> Vec<AdminNode> {
     state
         .nodes()
         .iter()
-        .map(|n| {
-            let (base, info) = base(state, n, &snap);
-            AdminNode {
-                base,
-                hidden: n.hidden,
-                hostname: info.as_ref().map(|h| h.hostname.clone()),
-                kernel: info.as_ref().map(|h| h.kernel.clone()),
-                agent_version: info.as_ref().map(|h| h.agent_version.clone()),
-                ip: n.last_ip.clone(),
-                note: n.note.clone(),
-                created_ms: n.created_ms,
-            }
-        })
+        .map(|n| admin_view(state, n, &snap))
         .collect()
+}
+
+/// 单个节点的管理员视图。
+pub fn admin_node(state: &AppState, id: i64) -> Option<AdminNode> {
+    let snap = Snapshot::take(state);
+    let nodes = state.nodes();
+    let n = nodes.iter().find(|n| n.id == id)?;
+    Some(admin_view(state, n, &snap))
+}
+
+fn admin_view(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> AdminNode {
+    let (base, info) = base(state, n, snap);
+    AdminNode {
+        base,
+        hidden: n.hidden,
+        hostname: info.as_ref().map(|h| h.hostname.clone()),
+        kernel: info.as_ref().map(|h| h.kernel.clone()),
+        agent_version: info.as_ref().map(|h| h.agent_version.clone()),
+        ip: n.last_ip.clone(),
+        note: n.note.clone(),
+        created_ms: n.created_ms,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_last_seen;
+
+    #[test]
+    fn last_seen_is_clamped_to_server_time() {
+        assert_eq!(merge_last_seen(Some(100), Some(500), 1000), Some(500));
+        assert_eq!(merge_last_seen(Some(100), Some(9_000), 1000), Some(1000));
+        assert_eq!(merge_last_seen(Some(9_000), None, 1000), Some(1000));
+        assert_eq!(merge_last_seen(None, None, 1000), None);
+    }
 }

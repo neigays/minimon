@@ -219,7 +219,7 @@ async fn run(
     state: &AppState,
     node_id: i64,
     conn_id: u64,
-    mut kick_rx: oneshot::Receiver<()>,
+    mut kick_rx: oneshot::Receiver<ErrorCode>,
     socket: &mut WebSocket,
 ) {
     let mut shutdown = state.shutdown_rx();
@@ -232,8 +232,11 @@ async fn run(
                 close(socket).await;
                 return;
             }
-            _ = &mut kick_rx => {
-                reject(socket, ErrorCode::Replaced, "同一 token 有新连接，当前连接被替换").await;
+            kick = &mut kick_rx => {
+                match kick.unwrap_or(ErrorCode::Replaced) {
+                    ErrorCode::Unauthorized => reject(socket, ErrorCode::Unauthorized, "token 已失效或节点已删除").await,
+                    code => reject(socket, code, "同一 token 有新连接，当前连接被替换").await,
+                }
                 return;
             }
             _ = ping.tick() => {

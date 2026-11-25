@@ -216,6 +216,10 @@ async fn guest_and_admin_key_sets() {
     assert_eq!(v[0]["hostname"], "secret-host");
     assert_eq!(v[0]["note"], "secret-note");
     assert_eq!(v[0]["hidden"], false);
+    let mut adm = live(f.port, Some(&cookie)).await.unwrap();
+    let snap = next_json(&mut adm).await;
+    assert_eq!(keys(&snap), sorted(&["type", "nodes"]));
+    assert_eq!(keys(&snap["nodes"][0]), sorted(&all));
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@ use crate::error::ApiError;
 use crate::live::gate;
 use crate::state::AppState;
 use axum::Json;
+use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 
@@ -18,10 +19,11 @@ pub struct Params {
 pub async fn get(
     State(state): State<AppState>,
     viewer: Viewer,
-    Path(id): Path<i64>,
+    id: Result<Path<i64>, PathRejection>,
     Query(p): Query<Params>,
 ) -> Result<Json<History>, ApiError> {
     gate(&state, &viewer)?;
+    let Path(id) = id.map_err(|_| ApiError::not_found("节点不存在或未公开"))?;
     let admin = matches!(viewer, Viewer::Admin { .. });
     if !state
         .nodes()

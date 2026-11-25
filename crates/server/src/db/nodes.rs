@@ -71,7 +71,120 @@ fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     })
 }
 
+/// 部分更新；`None` 表示不改。
+#[derive(Debug, Clone, Default)]
+pub struct NodePatch {
+    pub name: Option<String>,
+    pub group: Option<String>,
+    pub region: Option<String>,
+    pub note: Option<String>,
+    pub hidden: Option<bool>,
+}
+
 impl Db {
+    /// 后台新增节点：带分组等字段，排在现有节点之后。返回节点与明文 token（仅此一次）。
+    pub fn add_node_with(
+        &self,
+        name: &str,
+        group: &str,
+        region: &str,
+        note: &str,
+    ) -> Result<(Node, String), DbError> {
+        let token = generate_token();
+        let hash = hash_token(&token);
+        let created_ms = now_ms();
+        let (id, sort) = self.write(|c| {
+            let tx = c.transaction()?;
+            let sort: i64 =
+                tx.query_row("SELECT coalesce(max(sort) + 1, 0) FROM nodes", [], |r| {
+                    r.get(0)
+                })?;
+            tx.execute(
+                "INSERT INTO nodes (name, token_hash, created_ms, sort, grp, region, note) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![name, hash, created_ms, sort, group, region, note],
+            )?;
+            let id = tx.last_insert_rowid();
+            tx.commit()?;
+            Ok((id, sort))
+        })?;
+        let node = Node {
+            id,
+            name: name.to_string(),
+            sort,
+            hidden: false,
+            info: None,
+            group: group.to_string(),
+            region: region.to_string(),
+            note: note.to_string(),
+            last_ip: None,
+            last_seen_ms: None,
+            created_ms,
+        };
+        Ok((node, token))
+    }
+
+    /// 部分更新节点；节点不存在返回 false。
+    pub fn update_node(&self, id: i64, p: &NodePatch) -> Result<bool, DbError> {
+        self.write(|c| {
+            let n = c.execute(
+                "UPDATE nodes SET name = coalesce(?1, name), grp = coalesce(?2, grp), \
+                 region = coalesce(?3, region), note = coalesce(?4, note), \
+                 hidden = coalesce(?5, hidden) WHERE id = ?6",
+                params![
+                    p.name,
+                    p.group,
+                    p.region,
+                    p.note,
+                    p.hidden.map(i64::from),
+                    id
+                ],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// 删除节点及其全部指标（同一事务）；节点不存在返回 false。
+    pub fn delete_node(&self, id: i64) -> Result<bool, DbError> {
+        self.write(|c| {
+            let tx = c.transaction()?;
+            for t in ["metrics_raw", "metrics_1m", "metrics_15m"] {
+                tx.execute(&format!("DELETE FROM {t} WHERE node_id = ?1"), [id])?;
+            }
+            let n = tx.execute("DELETE FROM nodes WHERE id = ?1", [id])?;
+            tx.commit()?;
+            Ok(n > 0)
+        })
+    }
+
+    /// 重置 token，返回新明文 token；节点不存在返回 None。
+    pub fn reset_token(&self, id: i64) -> Result<Option<String>, DbError> {
+        let token = generate_token();
+        let hash = hash_token(&token);
+        self.write(|c| {
+            let n = c.execute(
+                "UPDATE nodes SET token_hash = ?1 WHERE id = ?2",
+                params![hash, id],
+            )?;
+            Ok((n > 0).then_some(token))
+        })
+    }
+
+    /// 按数组下标写 sort（单事务）。
+    pub fn reorder(&self, ids: &[i64]) -> Result<(), DbError> {
+        self.write(|c| {
+            let tx = c.transaction()?;
+            {
+                let mut stmt = tx.prepare("UPDATE nodes SET sort = ?1 WHERE id = ?2")?;
+                for (i, id) in ids.iter().enumerate() {
+                    stmt.execute(params![i as i64, id])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     /// 新增节点，返回节点与明文 token（仅此一次）。
     pub fn add_node(&self, name: &str) -> Result<(Node, String), DbError> {
         let token = generate_token();
@@ -259,6 +372,60 @@ mod tests {
         let got = &db.list_nodes().unwrap()[0];
         assert_eq!(got.last_ip.as_deref(), Some("1.2.3.4"));
         assert_eq!(got.last_seen_ms, Some(500));
+    }
+
+    #[test]
+    fn last_seen_clamped_to_server_time() {
+        let db = Db::open_in_memory().unwrap();
+        let (n, _) = db.add_node("a").unwrap();
+        let mut r = crate::state::tests::report();
+        r.ts_ms = now_ms() + 3_600_000;
+        let before = now_ms();
+        db.insert_reports(&[(n.id, r)]).unwrap();
+        let seen = db.list_nodes().unwrap()[0].last_seen_ms.unwrap();
+        assert!(seen >= before && seen <= now_ms(), "{seen}");
+    }
+
+    #[test]
+    fn add_update_reset_reorder_delete() {
+        let db = Db::open_in_memory().unwrap();
+        let (a, ta) = db.add_node_with("a", "g", "HK", "n").unwrap();
+        let (b, _) = db.add_node_with("b", "", "", "").unwrap();
+        assert_eq!((a.sort, b.sort), (0, 1));
+        let patch = NodePatch {
+            name: Some("a2".into()),
+            hidden: Some(true),
+            ..Default::default()
+        };
+        assert!(db.update_node(a.id, &patch).unwrap());
+        assert!(!db.update_node(999, &patch).unwrap());
+        let got = &db.list_nodes().unwrap()[0];
+        assert_eq!(
+            (got.name.as_str(), got.group.as_str(), got.hidden),
+            ("a2", "g", true)
+        );
+        let new = db.reset_token(a.id).unwrap().unwrap();
+        assert!(db.node_by_token(&ta).unwrap().is_none());
+        assert_eq!(db.node_by_token(&new).unwrap().unwrap().id, a.id);
+        assert!(db.reset_token(999).unwrap().is_none());
+        db.reorder(&[b.id, a.id]).unwrap();
+        let ids: Vec<_> = db.list_nodes().unwrap().iter().map(|n| n.id).collect();
+        assert_eq!(ids, [b.id, a.id]);
+        let mut r = crate::state::tests::report();
+        r.ts_ms = 1;
+        db.insert_reports(&[(a.id, r.clone()), (b.id, r)]).unwrap();
+        assert!(db.delete_node(a.id).unwrap());
+        assert!(!db.delete_node(a.id).unwrap());
+        let n: i64 = db
+            .raw_conn_for_test()
+            .query_row(
+                "SELECT count(*) FROM metrics_raw WHERE node_id = ?1",
+                [a.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(db.list_nodes().unwrap().len(), 1);
     }
 
     #[test]

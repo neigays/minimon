@@ -43,10 +43,13 @@ impl Db {
                 }
             }
             // 同事务内推进 last_seen_ms（每节点取批内最大 ts）。
+            // 钳到服务器当前时间：agent 时钟超前不得让 last_seen_ms 落在未来。
+            let now = super::now_ms();
             let mut newest: std::collections::HashMap<i64, i64> = Default::default();
             for (node_id, r) in rows {
-                let e = newest.entry(*node_id).or_insert(r.ts_ms);
-                *e = (*e).max(r.ts_ms);
+                let ts = r.ts_ms.min(now);
+                let e = newest.entry(*node_id).or_insert(ts);
+                *e = (*e).max(ts);
             }
             for (node_id, ts) in newest {
                 tx.prepare_cached(
