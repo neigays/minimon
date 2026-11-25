@@ -15,6 +15,7 @@ use sysinfo::{
 
 use filter::{is_counted_fs, is_counted_iface};
 use rate::RateTracker;
+use tracing::warn;
 
 /// 采集器。sysinfo 某部分初始化失败时，对应指标退化为 0，不影响其余部分。
 pub struct Collector {
@@ -22,6 +23,8 @@ pub struct Collector {
     disks: Option<Disks>,
     nets: Option<Networks>,
     rate: RateTracker,
+    /// load_average / uptime 失败只告警一次，避免每个上报周期刷屏。
+    warned_runtime: bool,
 }
 
 impl Default for Collector {
@@ -41,30 +44,33 @@ impl Collector {
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
         )
+        .map_err(|e| warn!("sysinfo System 初始化失败，CPU/内存指标将为 0: {e}"))
         .ok();
+        let disks = Disks::new_with_refreshed_list_specifics(disk_kind())
+            .map_err(|e| warn!("sysinfo Disks 初始化失败，磁盘指标将为 0: {e}"))
+            .ok();
+        let nets = Networks::new_with_refreshed_list()
+            .map_err(|e| warn!("sysinfo Networks 初始化失败，网络指标将为 0: {e}"))
+            .ok();
         Self {
             sys,
-            disks: Disks::new_with_refreshed_list_specifics(disk_kind()).ok(),
-            nets: Networks::new_with_refreshed_list().ok(),
+            disks,
+            nets,
             rate: RateTracker::new(),
+            warned_runtime: false,
         }
     }
 
     /// (已用, 总量)，仅统计计入的文件系统，并按设备名去重。
     fn disk_usage(&self) -> (u64, u64) {
-        let mut seen = HashSet::new();
-        let (mut used, mut total) = (0u64, 0u64);
-        for d in self.disks.iter().flat_map(|ds| ds.iter()) {
-            if !is_counted_fs(&d.file_system().to_string_lossy()) {
-                continue;
-            }
-            if !seen.insert(d.name().to_os_string()) {
-                continue;
-            }
-            total += d.total_space();
-            used += d.total_space().saturating_sub(d.available_space());
-        }
-        (used, total)
+        sum_disks(self.disks.iter().flat_map(|ds| ds.iter()).map(|d| {
+            (
+                d.file_system().to_string_lossy().into_owned(),
+                d.name().to_string_lossy().into_owned(),
+                d.total_space(),
+                d.available_space(),
+            )
+        }))
     }
 
     pub fn hello(&mut self) -> Hello {
@@ -83,7 +89,10 @@ impl Collector {
         Hello {
             v: PROTOCOL_VERSION,
             agent_version: env!("CARGO_PKG_VERSION").to_string(),
-            hostname: System::host_name().unwrap_or_default(),
+            hostname: System::host_name().unwrap_or_else(|e| {
+                warn!("读取主机名失败: {e}");
+                String::new()
+            }),
             os: System::long_os_version()
                 .or_else(|_| System::name())
                 .unwrap_or_default(),
@@ -129,7 +138,13 @@ impl Collector {
                 (r + d.total_received(), t + d.total_transmitted())
             });
         let (net_rx_rate, net_tx_rate) = self.rate.update(rx, tx, now_ms);
-        let load = System::load_average().ok();
+        let load = System::load_average();
+        let uptime = System::uptime();
+        if !self.warned_runtime && (load.is_err() || uptime.is_err()) {
+            self.warned_runtime = true;
+            warn!("读取负载或运行时间失败，相关指标将为 0（仅提示一次）");
+        }
+        let load = load.ok();
         let (tcp_count, udp_count) = conn::tcp_udp_counts();
         let sys = self.sys.as_ref();
 
@@ -147,12 +162,27 @@ impl Collector {
             load1: load.as_ref().map_or(0.0, |l| l.one),
             load5: load.as_ref().map_or(0.0, |l| l.five),
             load15: load.as_ref().map_or(0.0, |l| l.fifteen),
-            uptime_secs: System::uptime().unwrap_or(0),
+            uptime_secs: uptime.unwrap_or(0),
             process_count: sys.map_or(0, |s| s.processes().len()) as u32,
             tcp_count,
             udp_count,
         }
     }
+}
+
+/// 汇总磁盘用量。输入为 (文件系统类型, 设备名, 总量, 可用)；
+/// 排除不计入的文件系统，按设备名去重，返回 (已用, 总量)。
+fn sum_disks(disks: impl IntoIterator<Item = (String, String, u64, u64)>) -> (u64, u64) {
+    let mut seen = HashSet::new();
+    let (mut used, mut total) = (0u64, 0u64);
+    for (fs, dev, size, avail) in disks {
+        if !is_counted_fs(&fs) || !seen.insert(dev) {
+            continue;
+        }
+        total += size;
+        used += size.saturating_sub(avail);
+    }
+    (used, total)
 }
 
 /// 尽力而为地识别虚拟化环境：只读文件，不执行任何命令。
@@ -174,6 +204,22 @@ fn detect_virtualization() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn d(fs: &str, dev: &str, total: u64, avail: u64) -> (String, String, u64, u64) {
+        (fs.into(), dev.into(), total, avail)
+    }
+
+    #[test]
+    fn sum_disks_filters_dedups_and_saturates() {
+        let disks = [
+            d("ext4", "/dev/sda1", 100, 40),
+            d("ext4", "/dev/sda1", 100, 40), // 同设备 bind mount，只算一次
+            d("tmpfs", "tmpfs", 999, 0),     // 被排除
+            d("xfs", "/dev/sdb1", 50, 80),   // available > total，已用饱和为 0
+        ];
+        assert_eq!(sum_disks(disks), (60, 150));
+        assert_eq!(sum_disks([]), (0, 0));
+    }
 
     #[test]
     fn report_is_sane() {

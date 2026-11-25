@@ -44,7 +44,10 @@ mod tests {
 
     #[test]
     fn fs_filter() {
-        for f in ["tmpfs", "devtmpfs", "overlay", "squashfs", "cgroup2"] {
+        for f in [
+            "tmpfs", "devtmpfs", "overlay", "squashfs", "proc", "sysfs", "nsfs", "cgroup",
+            "cgroup2",
+        ] {
             assert!(!is_counted_fs(f));
         }
         for f in ["ext4", "xfs", "btrfs", "apfs"] {

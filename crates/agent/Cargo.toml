@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 minimon-common = { workspace = true }
 sysinfo = { workspace = true }
+tracing = { workspace = true }
