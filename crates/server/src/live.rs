@@ -2,6 +2,7 @@
 
 use crate::auth::Viewer;
 use crate::error::ApiError;
+use crate::probe::CardProbe;
 use crate::state::{AppState, LiveEvent};
 use crate::views::{self, NodeList};
 use axum::Json;
@@ -35,6 +36,11 @@ enum LiveMsg {
     },
     Offline {
         node_id: i64,
+    },
+    Probe {
+        node_id: i64,
+        #[serde(flatten)]
+        probe: CardProbe,
     },
     Traffic {
         node_id: i64,
@@ -134,7 +140,8 @@ fn to_msg(state: &AppState, admin: bool, ev: LiveEvent) -> Option<LiveMsg> {
     let id = match &ev {
         LiveEvent::Online { node_id }
         | LiveEvent::Offline { node_id }
-        | LiveEvent::Report { node_id, .. } => *node_id,
+        | LiveEvent::Report { node_id, .. }
+        | LiveEvent::Probe { node_id, .. } => *node_id,
         LiveEvent::Traffic { node_id, .. } => {
             // 流量字段仅管理员可见：访客连接一律丢弃。
             if !admin {
@@ -155,6 +162,7 @@ fn to_msg(state: &AppState, admin: bool, ev: LiveEvent) -> Option<LiveMsg> {
         LiveEvent::Online { node_id } => LiveMsg::Online { node_id },
         LiveEvent::Offline { node_id } => LiveMsg::Offline { node_id },
         LiveEvent::Report { node_id, report } => LiveMsg::Report { node_id, report },
+        LiveEvent::Probe { node_id, probe } => LiveMsg::Probe { node_id, probe },
         LiveEvent::Traffic { node_id, usage } => LiveMsg::Traffic {
             node_id,
             used: usage.used,

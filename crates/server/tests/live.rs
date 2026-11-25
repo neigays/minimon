@@ -310,6 +310,7 @@ async fn public_output_key_allowlist() {
         "disk_total",
         "last_seen_ms",
         "latest",
+        "probes",
     ]);
     let report_keys = sorted(&[
         "ts_ms",

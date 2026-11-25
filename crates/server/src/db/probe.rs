@@ -3,7 +3,7 @@
 //! 表之间没有外键，级联删除全在这里用代码完成。
 
 use super::{Db, DbError, now_ms};
-use minimon_common::protocol::ProbeKind;
+use minimon_common::protocol::{ProbeKind, ProbeResult};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
@@ -277,6 +277,34 @@ impl Db {
         purge_pairs(self, nodes.into_iter().map(|n| (id, n)).collect())
     }
 
+    /// 单事务批量写入探测原始结果；节点或任务已不存在的行被跳过。返回实际写入行数。
+    pub fn insert_probe_results(&self, rows: &[(i64, ProbeResult)]) -> Result<usize, DbError> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        self.write(|c| {
+            let tx = c.transaction()?;
+            let mut written = 0;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO probe_raw \
+                     (task_id, node_id, ts_ms, sent, lost, avg_ms, min_ms, max_ms, error) \
+                     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9 \
+                     WHERE EXISTS (SELECT 1 FROM nodes WHERE id = ?2) \
+                     AND EXISTS (SELECT 1 FROM probe_tasks WHERE id = ?1)",
+                )?;
+                for (node_id, r) in rows {
+                    written += stmt.execute(params![
+                        r.task_id, node_id, r.ts_ms, r.sent, r.lost, r.avg_ms, r.min_ms, r.max_ms,
+                        r.error
+                    ])?;
+                }
+            }
+            tx.commit()?;
+            Ok(written)
+        })
+    }
+
     /// 节点被删除：清它的全部探测数据（任务关联已在 `delete_node` 事务内删除）。
     pub fn purge_probe_data_for_node(&self, node_id: i64) -> Result<(), DbError> {
         let tasks: Vec<i64> = self.read(|c| {
@@ -296,5 +324,55 @@ impl Db {
                 .collect::<Result<_, _>>()?)
         })?;
         purge_pairs(self, tasks.into_iter().map(|t| (t, node_id)).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn res(task_id: i64, ts_ms: i64) -> ProbeResult {
+        ProbeResult {
+            task_id,
+            ts_ms,
+            sent: 5,
+            lost: 1,
+            avg_ms: Some(1.0),
+            min_ms: None,
+            max_ms: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn insert_probe_results_skips_missing_task_or_node() {
+        let db = Db::open_in_memory().unwrap();
+        let (n, _) = db.add_node("n").unwrap();
+        let t = db
+            .create_probe_task(&NewProbeTask {
+                name: "t".into(),
+                kind: ProbeKind::Tcp,
+                target: "h:1".into(),
+                interval_secs: 60,
+                samples: 1,
+                timeout_ms: 1000,
+                all_nodes: true,
+                node_ids: vec![],
+                show_on_card: true,
+                sort: None,
+            })
+            .unwrap();
+        let rows = [
+            (n.id, res(t.id, 1)),
+            (n.id, res(t.id + 100, 2)),
+            (n.id + 100, res(t.id, 3)),
+            (n.id, res(t.id, 4)),
+        ];
+        assert_eq!(db.insert_probe_results(&rows).unwrap(), 2);
+        let c: i64 = db
+            .read(|c| Ok(c.query_row("SELECT count(*) FROM probe_raw", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(c, 2);
+        assert_eq!(db.insert_probe_results(&[]).unwrap(), 0);
     }
 }

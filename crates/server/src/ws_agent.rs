@@ -295,8 +295,8 @@ async fn run(
                                     skew_warned = true;
                                     tracing::warn!(
                                         node_id,
-                                        skew_secs = (report.ts_ms - ts) / 1000,
-                                        "agent 时间与服务器相差超过 10 秒，改用接收时间"
+                                        skew_secs = report.ts_ms.saturating_sub(ts) / 1000,
+                                        "agent 时间与服务器相差超过 10 秒（agent − server），改用接收时间"
                                     );
                                 }
                                 report.ts_ms = ts;
@@ -311,6 +311,12 @@ async fn run(
                                 return;
                             }
                             state.ingest.push(node_id, report);
+                        }
+                        Ok(AgentMsg::ProbeResult(r)) => {
+                            let task_id = r.task_id;
+                            if !state.accept_probe_result(node_id, r, now_ms()) {
+                                tracing::debug!(node_id, task_id, "丢弃无效或不属于该节点的探测结果");
+                            }
                         }
                         Ok(_) => {}
                         Err(e) => tracing::debug!(node_id, error = %e, "忽略无法解析的消息"),

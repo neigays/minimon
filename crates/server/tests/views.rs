@@ -31,6 +31,7 @@ const PUBLIC_KEYS: &[&str] = &[
     "disk_total",
     "last_seen_ms",
     "latest",
+    "probes",
 ];
 const ADMIN_EXTRA: &[&str] = &[
     "hidden",

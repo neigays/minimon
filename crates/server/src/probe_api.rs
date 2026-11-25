@@ -340,6 +340,7 @@ async fn remove(
     // 先刷新缓存（任务不再下发），再清数据：清理失败只记日志，数据由保留期兜底。
     let hit = old.and_then(|t| affected(t.all_nodes, &t.node_ids, false, &[]));
     refresh(&state, hit, true).await?;
+    state.forget_probe_task(id);
     let db = state.db.clone();
     if let Err(e) = blocking(move || db.purge_probe_task_data(id)).await {
         tracing::error!(task_id = id, "删除探测任务后清理数据失败: {e:?}");

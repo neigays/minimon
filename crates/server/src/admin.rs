@@ -279,6 +279,7 @@ async fn remove(
     }
     // id 会被 SQLite 复用：内存里的最后已知上报必须一并清掉。
     state.forget_node(id);
+    state.forget_probe_node(id);
     // 再吊销一次：删除前刚通过认证、尚在握手的 agent 也要被拒绝。
     state.registry().revoke(id);
     if let Err(e) = state.reload_nodes().await {

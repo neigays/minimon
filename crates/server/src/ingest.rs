@@ -5,7 +5,7 @@
 //! 写入失败时记录错误并丢弃该批（M1 取舍：避免坏数据无限重试）。
 
 use crate::db::Db;
-use minimon_common::protocol::Report;
+use minimon_common::protocol::{ProbeResult, Report};
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
@@ -17,6 +17,7 @@ pub const DEFAULT_MAX_BATCH: usize = 500;
 
 enum Cmd {
     Push(i64, Box<Report>),
+    PushProbe(i64, Box<ProbeResult>),
     Flush(oneshot::Sender<usize>),
     Close,
 }
@@ -52,6 +53,13 @@ impl IngestHandle {
         }
     }
 
+    /// 入队一条探测结果（与指标同一写线程、同一 flush 节奏）。
+    pub fn push_probe(&self, node_id: i64, r: ProbeResult) {
+        if self.tx.send(Cmd::PushProbe(node_id, Box::new(r))).is_err() {
+            tracing::warn!(node_id, "ingest 已关闭，丢弃探测结果");
+        }
+    }
+
     /// 立即 flush，返回本次写入行数（失败或已关闭时为 0 / 通道关闭）。
     pub fn flush(&self) -> oneshot::Receiver<usize> {
         let (tx, rx) = oneshot::channel();
@@ -71,28 +79,53 @@ impl IngestJoin {
     }
 }
 
-fn flush_buf(db: &Db, buf: &mut Vec<(i64, Report)>) -> usize {
-    if buf.is_empty() {
-        return 0;
-    }
-    let rows = std::mem::take(buf);
-    match db.insert_reports(&rows) {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::error!(error = %e, rows = rows.len(), "批量入库失败，已丢弃该批数据");
-            0
-        }
+#[derive(Default)]
+struct Bufs {
+    reports: Vec<(i64, Report)>,
+    probes: Vec<(i64, ProbeResult)>,
+}
+
+impl Bufs {
+    fn len(&self) -> usize {
+        self.reports.len() + self.probes.len()
     }
 }
 
+fn flush_buf(db: &Db, buf: &mut Bufs) -> usize {
+    let mut n = 0;
+    if !buf.reports.is_empty() {
+        let rows = std::mem::take(&mut buf.reports);
+        match db.insert_reports(&rows) {
+            Ok(k) => n += k,
+            Err(e) => {
+                tracing::error!(error = %e, rows = rows.len(), "批量入库失败，已丢弃该批数据");
+            }
+        }
+    }
+    if !buf.probes.is_empty() {
+        let rows = std::mem::take(&mut buf.probes);
+        match db.insert_probe_results(&rows) {
+            Ok(k) => n += k,
+            Err(e) => {
+                tracing::error!(error = %e, rows = rows.len(), "探测结果入库失败，已丢弃该批数据");
+            }
+        }
+    }
+    n
+}
+
 fn run(db: Arc<Db>, rx: mpsc::Receiver<Cmd>, flush_every: Duration, max_batch: usize) {
-    let mut buf: Vec<(i64, Report)> = Vec::new();
+    let mut buf = Bufs::default();
     let mut deadline = Instant::now() + flush_every;
     loop {
         let wait = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(wait) {
-            Ok(Cmd::Push(id, r)) => {
-                buf.push((id, *r));
+            Ok(cmd @ (Cmd::Push(..) | Cmd::PushProbe(..))) => {
+                match cmd {
+                    Cmd::Push(id, r) => buf.reports.push((id, *r)),
+                    Cmd::PushProbe(id, r) => buf.probes.push((id, *r)),
+                    _ => {}
+                }
                 if buf.len() >= max_batch {
                     flush_buf(&db, &mut buf);
                     deadline = Instant::now() + flush_every;

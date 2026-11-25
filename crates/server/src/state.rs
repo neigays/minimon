@@ -432,6 +432,11 @@ pub enum LiveEvent {
         node_id: i64,
         usage: crate::traffic::TrafficUsage,
     },
+    /// 探测任务最新结果（仅 `show_on_card` 的任务发布；不含目标地址）。
+    Probe {
+        node_id: i64,
+        probe: crate::probe::CardProbe,
+    },
     /// 可见性或整站登录设置变化：订阅者应重新同步。
     Resync,
 }

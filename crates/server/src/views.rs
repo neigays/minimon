@@ -3,6 +3,7 @@
 //! 隐私：视图逐字段构造，绝不直接序列化 `Hello` 或 `Node`。
 //! `PublicNode` 里不得出现 IP、主机名、内核、备注、agent 版本、hidden、created_ms。
 
+use crate::probe::CardProbe;
 use crate::state::AppState;
 use crate::traffic::TrafficUsage;
 use minimon_common::protocol::{Hello, Report};
@@ -27,6 +28,7 @@ pub struct PublicNode {
     pub disk_total: Option<u64>,
     pub last_seen_ms: Option<i64>,
     pub latest: Option<Report>,
+    pub probes: Vec<CardProbe>,
 }
 
 /// 管理员视图：公开字段加管理字段。
@@ -116,6 +118,7 @@ fn base(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> (PublicNode, 
         disk_total: info.as_ref().map(|h| h.disk_total),
         last_seen_ms,
         latest,
+        probes: state.latest_probe(n.id),
     };
     (p, info)
 }
