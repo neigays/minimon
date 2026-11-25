@@ -12,6 +12,13 @@ services:
     volumes:
       - minimon-data:/data
     stop_grace_period: 20s
+    # environment:
+    #   # 对外访问地址（用于生成 agent 安装命令等）
+    #   MINIMON_PUBLIC_URL: "https://monitor.example.com"
+    #   # 警告：仅当 server 位于可信反向代理之后时才设置，否则客户端可伪造来源 IP
+    #   MINIMON_REAL_IP_HEADER: "X-Forwarded-For"
+    #   # 预设管理员初始密码；不设置则首次启动时随机生成并只在日志中打印一次
+    #   MINIMON_ADMIN_PASSWORD: "change-me"
 
 volumes:
   minimon-data:

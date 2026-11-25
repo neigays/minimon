@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+pub use aggregate::ROLLUP_LAG_MS;
 pub use nodes::{Node, NodePatch};
 
 #[derive(Debug, thiserror::Error)]

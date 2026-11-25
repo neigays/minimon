@@ -128,3 +128,157 @@ async fn agent_to_server_end_to_end() {
         .unwrap();
     assert!(n >= 1, "metrics_raw 无数据");
 }
+
+mod common;
+
+use common::{http, login, start};
+use minimon_server::db::ROLLUP_LAG_MS;
+
+async fn json_of(
+    port: u16,
+    method: &str,
+    path: &str,
+    cookie: Option<&str>,
+    body: Option<&str>,
+) -> (u16, Value) {
+    let (code, _, text) = http(port, method, path, cookie, body).await;
+    (code, serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+fn find(list: &Value, id: i64) -> Option<&Value> {
+    list.as_array()?.iter().find(|n| n["id"] == id)
+}
+
+#[tokio::test]
+async fn admin_flow_end_to_end() {
+    let f = start(|c| c.report_interval_secs = 1).await;
+    let port = f.port;
+    let cookie = login(port).await;
+
+    // 创建节点拿 token，用真实 agent 连接
+    let (code, v) = json_of(
+        port,
+        "POST",
+        "/api/admin/nodes",
+        Some(&cookie),
+        Some(r#"{"name":"e2e-admin"}"#),
+    )
+    .await;
+    assert_eq!(code, 201, "{v}");
+    let id = v["node"]["id"].as_i64().unwrap();
+    let token = v["token"].as_str().unwrap().to_string();
+
+    let mut acfg = AgentConfig::new(format!("ws://127.0.0.1:{port}"), token);
+    acfg.backoff_base = Duration::from_millis(100);
+    acfg.backoff_max = Duration::from_millis(500);
+    let (agent_stop_tx, agent_stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let agent = tokio::spawn(minimon_agent::run(acfg, async {
+        let _ = agent_stop_rx.await;
+    }));
+
+    // 管理员视图：online 且有 ip
+    let mut last = Value::Null;
+    let ok = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let (_, v) = json_of(port, "GET", "/api/nodes", Some(&cookie), None).await;
+            if let Some(n) = find(&v, id)
+                && n["online"] == true
+                && n["latest"].is_object()
+                && n["ip"].is_string()
+            {
+                return;
+            }
+            last = v;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(ok.is_ok(), "管理员视图未见在线且带 ip: {last}");
+
+    // 访客视图：无 ip 键
+    let (_, guest) = json_of(port, "GET", "/api/nodes", None, None).await;
+    let gn = find(&guest, id).expect("访客应看到该节点");
+    assert!(gn.get("ip").is_none(), "访客不得看到 ip: {gn}");
+
+    // 入库每 10 秒 flush 一次，最多等 15 秒
+    let path = format!("/api/nodes/{id}/history?range=1h");
+    let mut hist = Value::Null;
+    let ok = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let (_, v) = json_of(port, "GET", &path, None, None).await;
+            if v["ts"].as_array().is_some_and(|a| !a.is_empty()) {
+                hist = v;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    assert!(ok.is_ok(), "历史 ts 一直为空");
+    let n = hist["ts"].as_array().unwrap().len();
+    assert_eq!(hist["cpu"].as_array().unwrap().len(), n, "cpu 与 ts 应等长");
+
+    // 手动触发降采样（测试专用：第二个 Db 连接同一文件）
+    let db2 = Db::open(&f.db_path).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    db2.rollup(now + 120_000, ROLLUP_LAG_MS, 50).unwrap();
+    let (code, v) = json_of(
+        port,
+        "GET",
+        &format!("/api/nodes/{id}/history?range=24h"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{v}");
+    assert_eq!(v["granularity"], "1m");
+    assert!(
+        !v["ts"].as_array().unwrap().is_empty(),
+        "1m 聚合应非空: {v}"
+    );
+
+    // 隐藏 → 访客不可见
+    let (code, _) = json_of(
+        port,
+        "PATCH",
+        &format!("/api/admin/nodes/{id}"),
+        Some(&cookie),
+        Some(r#"{"hidden":true}"#),
+    )
+    .await;
+    assert_eq!(code, 200);
+    let (_, guest) = json_of(port, "GET", "/api/nodes", None, None).await;
+    assert!(find(&guest, id).is_none(), "隐藏节点不应对访客可见");
+
+    // 删除 → agent 被断开且不再入库
+    let (code, _) = json_of(
+        port,
+        "DELETE",
+        &format!("/api/admin/nodes/{id}"),
+        Some(&cookie),
+        Some("{}"),
+    )
+    .await;
+    assert!(code == 200 || code == 204, "删除返回 {code}");
+    let (_, admin) = json_of(port, "GET", "/api/nodes", Some(&cookie), None).await;
+    assert!(find(&admin, id).is_none());
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let c = rusqlite::Connection::open(&f.db_path).unwrap();
+    let cnt: i64 = c
+        .query_row(
+            "SELECT count(*) FROM metrics_raw WHERE node_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cnt, 0, "删除后不应再有该节点数据");
+
+    let _ = agent_stop_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(5), agent)
+        .await
+        .expect("agent 未退出");
+    f.stop().await;
+}
