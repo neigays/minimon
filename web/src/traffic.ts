@@ -62,3 +62,17 @@ export interface Traffic {
   period_start_ms: number
   period_end_ms: number
 }
+
+/** 账期边界按服务器时区显示为 `M/D HH:mm`；时区缺省或无效时退回浏览器本地时间。 */
+export function formatPeriodDay(ms: number, timeZone: string | null): string {
+  const opts: Intl.DateTimeFormatOptions = { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }
+  let f: Intl.DateTimeFormat
+  try {
+    f = new Intl.DateTimeFormat('en-US', timeZone ? { ...opts, timeZone } : opts)
+  } catch {
+    f = new Intl.DateTimeFormat('en-US', opts)
+  }
+  const m: Record<string, string> = {}
+  for (const p of f.formatToParts(new Date(ms))) m[p.type] = p.value
+  return `${m.month}/${m.day} ${m.hour}:${m.minute}`
+}

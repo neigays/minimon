@@ -160,6 +160,8 @@ async fn create(
     if let Err(e) = state.reload_nodes().await {
         tracing::error!(error = %e, "新增节点后刷新缓存失败");
     }
+    // 先重算再同步：新节点一出现就带着本期用量，不必等下一轮 rollup。
+    state.recompute_traffic(Some(vec![node.id])).await;
     state.publish_resync();
     let node =
         views::admin_node(&state, node.id).unwrap_or_else(|| views::admin_node_of(&state, &node));
@@ -196,6 +198,9 @@ fn validate_billing(req: &PatchReq) -> Result<BillingPatch, ApiError> {
         && q < 0
     {
         return Err(ApiError::bad_request("流量额度不能为负数"));
+    }
+    if req.traffic_quota == Some(Some(0)) {
+        return Err(ApiError::bad_request("额度需大于 0，不限请留空"));
     }
     let reset_day = req
         .traffic_reset_day

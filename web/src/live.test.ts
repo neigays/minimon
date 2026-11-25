@@ -50,5 +50,7 @@ test('probe and traffic messages', () => {
   expect(p[0].probes[0].name).toBe('移动')
   const t = applyMsg([n], { type: 'traffic', node_id: 1, used: 50, rx: 30, tx: 20, quota: 100, period_start_ms: 1, period_end_ms: 2 })
   expect(t[0].traffic).toMatchObject({ used: 50, quota: 100, reset_day: 1, mode: 'sum', period_end_ms: 2 })
-  expect(applyMsg([node(1)], { type: 'traffic', node_id: 1, used: 1, rx: 1, tx: 0, quota: null, period_start_ms: 0, period_end_ms: 1 })[0].traffic).toBeUndefined()
+  const built = applyMsg([{ ...node(1), traffic_reset_day: 9, traffic_mode: 'max' } as PublicNode], { type: 'traffic', node_id: 1, used: 7, rx: 4, tx: 3, quota: 100, period_start_ms: 0, period_end_ms: 1 })[0].traffic
+  expect(built).toEqual({ quota: 100, reset_day: 9, mode: 'max', used: 7, rx: 4, tx: 3, period_start_ms: 0, period_end_ms: 1 })
+  expect(applyMsg([node(1)], { type: 'traffic', node_id: 1, used: 1, rx: 1, tx: 0, quota: null, period_start_ms: 0, period_end_ms: 1 })[0].traffic).toMatchObject({ reset_day: 1, mode: 'sum', used: 1 })
 })

@@ -1,6 +1,6 @@
 //! `GET /api/agent/ws`：agent 接入。
 
-use crate::clock::normalize_ts;
+use crate::clock::TsNormalizer;
 use crate::db::now_ms;
 use crate::probe::tasks_for_node;
 use crate::state::AppState;
@@ -249,6 +249,10 @@ async fn run(
     let mut last_seen = Instant::now();
     // 时间偏差告警每个连接只记录一次。
     let mut skew_warned = false;
+    // 以节点最后已知上报播种，保证跨重连也不回退。
+    let seed = state.last_known().get(&node_id).map(|r| r.ts_ms);
+    let mut norm = TsNormalizer::new(seed, now_ms());
+    let mut probe_norm = TsNormalizer::new(None, now_ms());
     loop {
         tokio::select! {
             _ = async { let _ = shutdown.wait_for(|v| *v).await; } => {
@@ -289,9 +293,9 @@ async fn run(
                 match msg {
                     Message::Text(t) => match serde_json::from_str::<AgentMsg>(&t) {
                         Ok(AgentMsg::Report(mut report)) => {
-                            let (ts, replaced) = normalize_ts(report.ts_ms, now_ms());
+                            let (ts, replaced) = norm.apply(report.ts_ms, now_ms());
                             if replaced {
-                                if !skew_warned {
+                                if !skew_warned && report.ts_ms.abs_diff(ts) > 10_000 {
                                     skew_warned = true;
                                     tracing::warn!(
                                         node_id,
@@ -314,7 +318,7 @@ async fn run(
                         }
                         Ok(AgentMsg::ProbeResult(r)) => {
                             let task_id = r.task_id;
-                            let accepted = handle_probe_result(state, node_id, conn_id, r);
+                            let accepted = handle_probe_result(state, node_id, conn_id, r, &mut probe_norm);
                             if !accepted {
                                 tracing::debug!(node_id, task_id, "丢弃无效或不属于该节点的探测结果");
                             }
@@ -336,12 +340,15 @@ pub(crate) fn handle_probe_result(
     state: &AppState,
     node_id: i64,
     conn_id: u64,
-    r: ProbeResult,
+    mut r: ProbeResult,
+    norm: &mut TsNormalizer,
 ) -> bool {
+    let now = now_ms();
+    r.ts_ms = norm.apply(r.ts_ms, now).0;
     state
         .registry()
         .with_owner(node_id, conn_id, || {
-            state.accept_probe_result(node_id, r, now_ms())
+            state.accept_probe_result(node_id, r, now)
         })
         .unwrap_or(false)
 }
@@ -404,12 +411,19 @@ mod tests {
             .unwrap();
         let (state, _j) = AppState::new(db, ServerConfig::default()).unwrap();
         let (old, _k1, _o1) = state.registry().connect(node.id, hello());
+        let mut nm = TsNormalizer::default();
         let mut rx = state.live().subscribe();
         let (new, _k2, _o2) = state.registry().connect(node.id, hello());
         while rx.try_recv().is_ok() {}
 
         // 被替换的旧连接：丢弃，不写最新值、不发事件。
-        assert!(!handle_probe_result(&state, node.id, old, result(task.id)));
+        assert!(!handle_probe_result(
+            &state,
+            node.id,
+            old,
+            result(task.id),
+            &mut nm
+        ));
         assert!(
             state
                 .latest_probe(node.id)
@@ -421,7 +435,13 @@ mod tests {
         // 吊销之后连当前连接也被丢弃。
         state.registry().revoke(node.id);
         while rx.try_recv().is_ok() {}
-        assert!(!handle_probe_result(&state, node.id, new, result(task.id)));
+        assert!(!handle_probe_result(
+            &state,
+            node.id,
+            new,
+            result(task.id),
+            &mut nm
+        ));
         assert!(
             state
                 .latest_probe(node.id)
@@ -432,7 +452,13 @@ mod tests {
 
         // 对照：当前会话的结果被接受。
         let (cur, _k3, _o3) = state.registry().connect(node.id, hello());
-        assert!(handle_probe_result(&state, node.id, cur, result(task.id)));
+        assert!(handle_probe_result(
+            &state,
+            node.id,
+            cur,
+            result(task.id),
+            &mut nm
+        ));
         assert_eq!(state.latest_probe(node.id)[0].avg_ms, Some(5.0));
     }
 }

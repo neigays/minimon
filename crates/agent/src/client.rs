@@ -3,6 +3,7 @@
 //! 只处理 `ServerMsg` 中的固定消息；任何无法解析的帧都只记录日志后忽略，绝不执行。
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -18,7 +19,7 @@ use tracing::{debug, info, warn};
 use crate::backoff::Backoff;
 use crate::collect::Collector;
 use crate::config::AgentConfig;
-use crate::probe::ProbeScheduler;
+use crate::probe::{IcmpState, ProbeScheduler};
 
 const WS_PATH: &str = "/api/agent/ws";
 const PING_INTERVAL: Duration = Duration::from_secs(15);
@@ -60,10 +61,12 @@ pub async fn run(cfg: AgentConfig, shutdown: impl Future<Output = ()>) -> anyhow
     let req = build_request(&cfg)?;
     let mut collector = Collector::new().with_iface_include(cfg.iface_include.clone());
     let mut backoff = Backoff::new(cfg.backoff_base, cfg.backoff_max);
+    // ICMP 可用性缓存与告警随进程存在，重连不重置（避免每次重连都重试并重复告警）。
+    let icmp = Arc::new(IcmpState::new());
     tokio::pin!(shutdown);
     info!(server = %cfg.server, "agent 启动");
     loop {
-        match session(&cfg, req.clone(), &mut collector, &mut shutdown).await {
+        match session(&cfg, req.clone(), &mut collector, &icmp, &mut shutdown).await {
             Outcome::Shutdown => {
                 info!("收到退出信号，agent 退出");
                 return Ok(());
@@ -122,6 +125,7 @@ async fn session<S>(
     cfg: &AgentConfig,
     req: Request<()>,
     collector: &mut Collector,
+    icmp: &Arc<IcmpState>,
     shutdown: &mut std::pin::Pin<&mut S>,
 ) -> Outcome
 where
@@ -138,7 +142,7 @@ where
     };
     debug!("WebSocket 已连接");
 
-    let outcome = drive(cfg, &mut ws, collector, shutdown).await;
+    let outcome = drive(cfg, &mut ws, collector, icmp, shutdown).await;
     if matches!(outcome, Outcome::Shutdown) {
         let _ = timeout(CLOSE_TIMEOUT, ws.close(None)).await;
     }
@@ -149,6 +153,7 @@ async fn drive<S, W>(
     cfg: &AgentConfig,
     ws: &mut W,
     collector: &mut Collector,
+    icmp: &Arc<IcmpState>,
     shutdown: &mut std::pin::Pin<&mut S>,
 ) -> Outcome
 where
@@ -209,7 +214,7 @@ where
     // 调度器随本次连接存在：任何退出路径（Drop）都会取消全部探测任务，
     // 断线期间不产生结果；重连后由新的 ProbeTasks 重建。
     let (probe_tx, mut probe_rx) = mpsc::channel(64);
-    let mut probes = ProbeScheduler::new(probe_tx);
+    let mut probes = ProbeScheduler::with_icmp(probe_tx, icmp.clone());
 
     loop {
         tokio::select! {

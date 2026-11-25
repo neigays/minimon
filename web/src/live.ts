@@ -71,9 +71,11 @@ export function applyMsg(nodes: PublicNode[], msg: LiveMsg): PublicNode[] {
       case 'offline':
         return { ...n, online: false }
       case 'traffic': {
-        if (!n.traffic) return n
         const { used, rx, tx, quota, period_start_ms, period_end_ms } = msg
-        return { ...n, traffic: { ...n.traffic, used, rx, tx, quota, period_start_ms, period_end_ms } }
+        // 新建节点等尚无 traffic 时由事件构建：重置日与口径取自管理员视图里的配置字段。
+        const cfg = n as PublicNode & { traffic_reset_day?: number; traffic_mode?: Traffic['mode'] }
+        const base: Traffic = n.traffic ?? { quota, reset_day: cfg.traffic_reset_day ?? 1, mode: cfg.traffic_mode ?? 'sum', used, rx, tx, period_start_ms, period_end_ms }
+        return { ...n, traffic: { ...base, used, rx, tx, quota, period_start_ms, period_end_ms } }
       }
     }
   })

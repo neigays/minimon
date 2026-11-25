@@ -326,6 +326,34 @@ async fn deleting_task_clears_latest() {
 }
 
 #[tokio::test]
+async fn changing_target_clears_latest_but_renaming_keeps_it() {
+    let f = start(|_| {}).await;
+    let ck = login(f.port).await;
+    let (_, token) = add_node(&f, &ck).await;
+    let task = add_task(&f, &ck, 0, true, true).await;
+    let mut ws = agent(f.port, &token).await;
+    send_result(&mut ws, result(task, None)).await;
+    wait_guest(&f, |v| v[0]["probes"][0]["avg_ms"] == 32.5).await;
+    let path = format!("/api/admin/probes/{task}");
+    api(&f, &ck, "PATCH", &path, Some(json!({"name": "联通"}))).await;
+    let v: Value = serde_json::from_str(&guest_nodes(&f).await).unwrap();
+    assert_eq!(v[0]["probes"][0]["avg_ms"], 32.5, "仅改名不应清空");
+    api(
+        &f,
+        &ck,
+        "PATCH",
+        &path,
+        Some(json!({"target": "other.example.org"})),
+    )
+    .await;
+    let v: Value = serde_json::from_str(&guest_nodes(&f).await).unwrap();
+    assert!(
+        v[0]["probes"][0]["avg_ms"].is_null(),
+        "改目标后旧结果应清空: {v}"
+    );
+}
+
+#[tokio::test]
 async fn card_affecting_task_edits_resync_live_clients() {
     let f = start(|_| {}).await;
     let ck = login(f.port).await;

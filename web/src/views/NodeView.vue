@@ -9,7 +9,8 @@ import { buildCharts, fetchHistory, granularityNote, RANGES, toHistoryErr, type 
 import { useLive, type PublicNode } from '../live'
 import { statusOf } from '../status'
 import { buildProbeCharts, fetchProbeHistory, type ProbeHistory } from '../probe'
-import { expireLevel, expireText, formatDecBytes, MODE_LABELS } from '../traffic'
+import { api } from '../api'
+import { expireLevel, expireText, formatDecBytes, formatPeriodDay, MODE_LABELS } from '../traffic'
 
 type Info = PublicNode & { hostname?: string | null; kernel?: string | null; agent_version?: string | null; ip?: string | null; note?: string }
 
@@ -121,11 +122,21 @@ const priv = computed(() => {
     ['备注', dash(n.note)],
   ]
 })
-const fmtDay = (ms: number) => {
-  const d = new Date(ms)
-  const p = (x: number) => String(x).padStart(2, '0')
-  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
+// 账期按服务器时区定义：向管理员设置接口取时区，取到之前先不按浏览器本地时间猜。
+const tz = ref<string | null>(null)
+watch(
+  user,
+  async (u) => {
+    if (!u || tz.value) return
+    try {
+      tz.value = (await api<{ timezone: string }>('GET', '/api/admin/settings')).timezone
+    } catch {
+      /* 时区取不到时账期按本地时间显示 */
+    }
+  },
+  { immediate: true },
+)
+const fmtDay = (ms: number) => formatPeriodDay(ms, tz.value)
 const adminExtra = computed<[string, string, string][]>(() => {
   const n = node.value
   if (!n || !user.value) return []
@@ -177,12 +188,14 @@ const adminExtra = computed<[string, string, string][]>(() => {
 
       <p v-if="err" class="err" role="alert">{{ err.text }}</p>
       <p v-else-if="loading && !hist" class="muted">加载中…</p>
-      <p v-else-if="hist && hist.ts.length === 0" class="empty">该时间范围内暂无数据</p>
-      <div v-else-if="built" class="charts">
+      <p v-else-if="hist && hist.ts.length === 0 && !probeBuilt" class="empty">该时间范围内暂无数据</p>
+      <div v-else-if="(built && hist && hist.ts.length > 0) || probeBuilt" class="charts">
         <template v-if="probeBuilt">
           <HistoryChart v-for="c in probeBuilt.charts" :key="c.key" :title="c.title" :series="c.series" :ts="probeBuilt.ts" :unit="c.unit" :max="c.max" />
         </template>
-        <HistoryChart v-for="c in built.charts" :key="c.key" :title="c.title" :series="c.series" :ts="built.ts" :unit="c.unit" :max="c.max" />
+        <template v-if="built && hist && hist.ts.length > 0">
+          <HistoryChart v-for="c in built.charts" :key="c.key" :title="c.title" :series="c.series" :ts="built.ts" :unit="c.unit" :max="c.max" />
+        </template>
       </div>
     </template>
   </section>

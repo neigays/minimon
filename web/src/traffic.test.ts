@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { bytesToQuotaInput, expireLevel, expireText, formatDecBytes, gbToBytes, quotaPct } from './traffic'
+import { bytesToQuotaInput, expireLevel, expireText, formatDecBytes, formatPeriodDay, gbToBytes, quotaPct } from './traffic'
 
 test('decimal traffic', () => {
   expect(formatDecBytes(126_400_000_000)).toBe('126.4G')
@@ -31,4 +31,13 @@ test('expire', () => {
   expect(expireLevel(0)).toBe('hi')
   expect(expireLevel(-1)).toBe('crit')
   expect(expireLevel(null)).toBe('')
+})
+
+test('formatPeriodDay uses the given timezone', () => {
+  // 2026-02-28T16:00:00Z = 上海 3/1 00:00 = 纽约 2/28 11:00
+  const ms = Date.UTC(2026, 1, 28, 16, 0)
+  expect(formatPeriodDay(ms, 'Asia/Shanghai')).toBe('3/1 00:00')
+  expect(formatPeriodDay(ms, 'America/New_York')).toBe('2/28 11:00')
+  expect(formatPeriodDay(ms, 'UTC')).toBe('2/28 16:00')
+  expect(formatPeriodDay(ms, 'Mars/X')).toMatch(/^\d+\/\d+ \d\d:\d\d$/)
 })

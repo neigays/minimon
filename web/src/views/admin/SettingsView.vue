@@ -36,6 +36,7 @@ async function toggle() {
   }
 }
 
+const MORE_ZONES = ['Asia/Seoul', 'Asia/Taipei', 'Asia/Bangkok', 'Asia/Kolkata', 'Asia/Dubai', 'Asia/Kuala_Lumpur', 'Asia/Manila', 'Asia/Jakarta', 'Australia/Sydney', 'Europe/Paris', 'Europe/Berlin', 'Europe/Amsterdam', 'Europe/Moscow', 'America/Chicago', 'America/Denver', 'America/Toronto', 'America/Sao_Paulo', 'Pacific/Auckland', 'Etc/UTC']
 const ZONES = ['Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Tokyo', 'Asia/Singapore', 'UTC', 'Europe/London', 'America/Los_Angeles', 'America/New_York']
 const tz = ref('')
 const savedTz = ref('')
@@ -113,7 +114,7 @@ async function submitPw() {
           <option v-for="z in ZONES" :key="z" :value="z">{{ z }}</option>
         </select>
       </div>
-      <div class="field"><label for="tz-in">或输入任意 IANA 时区名称</label><input id="tz-in" v-model="tz" autocomplete="off" spellcheck="false" placeholder="如 Europe/Berlin" /></div>
+      <div class="field"><label for="tz-in">或输入任意 IANA 时区名称</label><input id="tz-in" v-model="tz" list="tz-list" autocomplete="off" spellcheck="false" placeholder="如 Europe/Berlin" /><datalist id="tz-list"><option v-for="z in [...ZONES, ...MORE_ZONES]" :key="z" :value="z" /></datalist></div>
       <div v-if="tzErr" class="err" role="alert">{{ tzErr }}</div>
       <div v-if="tzOk" class="ok" role="status">时区已保存</div>
       <div><button class="btn" type="submit" :disabled="tzBusy || !loaded || tz.trim() === savedTz">{{ tzBusy ? '保存中…' : '保存时区' }}</button></div>

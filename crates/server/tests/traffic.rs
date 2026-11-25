@@ -266,6 +266,7 @@ async fn invalid_inputs_400() {
         json!({"expire_date": "2027-02-30"}),
         json!({"expire_date": "2027-2-3"}),
         json!({"traffic_quota": -1}),
+        json!({"traffic_quota": 0}),
     ] {
         let (c, b) = patch(f.port, &cookie, id, body.clone()).await;
         assert_eq!(c, 400, "{body} -> {b}");
@@ -327,4 +328,32 @@ async fn admin_node_exposes_stored_billing_config() {
     assert_eq!(v["traffic_quota"], 7_000_000_000i64);
     assert_eq!(v["traffic_reset_day"], 9);
     assert_eq!(v["traffic_mode"], "max");
+}
+
+#[tokio::test]
+async fn new_node_has_traffic_immediately() {
+    let (f, _) = boot().await;
+    let cookie = login(f.port).await;
+    let (c, _, b) = http(
+        f.port,
+        "POST",
+        "/api/admin/nodes",
+        Some(&cookie),
+        Some(r#"{"name":"fresh"}"#),
+    )
+    .await;
+    assert_eq!(c, 201, "{b}");
+    let created: Value = serde_json::from_str(&b).unwrap();
+    assert!(created["node"]["traffic"].is_object(), "{b}");
+    let id = created["node"]["id"].as_i64().unwrap();
+    // 紧接着的列表里同样带着本期用量，无需等 rollup 轮次。
+    let v = nodes(f.port, Some(&cookie)).await;
+    let n = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"].as_i64() == Some(id))
+        .unwrap();
+    assert!(n["traffic"].is_object(), "{n}");
+    assert_eq!(n["traffic"]["used"], 0);
 }

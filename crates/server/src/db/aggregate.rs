@@ -222,3 +222,69 @@ pub fn merge_buckets(node_id: i64, rows: &[AggRow], bucket_ms: i64) -> Vec<AggRo
     }
     out
 }
+
+#[cfg(test)]
+mod ts_order_tests {
+    use super::*;
+    use crate::clock::{TsNormalizer, normalize_ts};
+
+    /// 返回 (采用的时间戳, 累计计数) 序列：agent 时钟偏差在 +9.9s / +10.1s 之间交替。
+    fn reports() -> Vec<(i64, i64, i64)> {
+        // (agent_ts, server_now, counter)
+        (0..40)
+            .map(|k| {
+                let now = 10_000_000 + k * 5_000;
+                let skew = if k % 2 == 0 { 9_900 } else { 10_100 };
+                (
+                    now + skew,
+                    now + 100 * (k % 3),
+                    3_000_000_000_000 + k * 1_000,
+                )
+            })
+            .collect()
+    }
+
+    fn total_delta(mut samples: Vec<RawSample>) -> i64 {
+        samples.sort_by_key(|s| s.ts_ms);
+        let first = samples[0].net_rx_bytes;
+        let rows = aggregate_raw(1, Some((first, 0)), &samples, MINUTE_MS);
+        rows.iter().map(|r| r.net_rx_delta).sum()
+    }
+
+    fn sample(ts: i64, c: i64) -> RawSample {
+        RawSample {
+            ts_ms: ts,
+            net_rx_bytes: c,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn old_normalization_inflates_traffic() {
+        let s: Vec<_> = reports()
+            .into_iter()
+            .map(|(a, now, c)| sample(normalize_ts(a, now).0, c))
+            .collect();
+        let true_delta = 39 * 1_000;
+        assert!(
+            total_delta(s) > true_delta * 1_000,
+            "无修复时应出现整段累计计数被计入"
+        );
+    }
+
+    #[test]
+    fn sticky_monotonic_keeps_traffic_exact() {
+        let mut n = TsNormalizer::new(None, 0);
+        let mut last = i64::MIN;
+        let s: Vec<_> = reports()
+            .into_iter()
+            .map(|(a, now, c)| {
+                let ts = n.apply(a, now).0;
+                assert!(ts > last, "时间戳必须严格递增");
+                last = ts;
+                sample(ts, c)
+            })
+            .collect();
+        assert_eq!(total_delta(s), 39 * 1_000);
+    }
+}

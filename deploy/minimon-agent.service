@@ -12,8 +12,9 @@ RestartSec=5
 DynamicUser=yes
 NoNewPrivileges=yes
 # 免特权 ICMP（ping_group_range）不可用时退回 RAW 套接字，需要 CAP_NET_RAW；
-# 仅授予 ambient 能力，未设置 CapabilityBoundingSet 限制。
+# 仅授予 ambient 能力，并用 CapabilityBoundingSet 把能力上限收到 CAP_NET_RAW。
 AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=yes
 

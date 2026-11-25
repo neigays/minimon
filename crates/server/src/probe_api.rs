@@ -287,6 +287,8 @@ async fn update(
         let ids = validate_nodes(&state, ids)?;
         req.node_ids.is_some().then_some(ids)
     };
+    let req_kind_or_target_changed =
+        req.kind.is_some_and(|k| k != cur.kind) || target.is_some_and(|t| t != cur.target);
     // ProbeTask 不含 name / show_on_card / sort：只改这些时无需打扰 agent。
     let agent_relevant = req.kind.is_some()
         || req.target.is_some()
@@ -316,6 +318,10 @@ async fn update(
     let db = state.db.clone();
     if !blocking(move || db.update_probe_task(id, &patch)).await? {
         return Err(ApiError::not_found(MSG_NO_TASK));
+    }
+    if req_kind_or_target_changed {
+        // 旧目标的最新结果不能继续挂在卡片上；先清再重同步。
+        state.forget_probe_task(id);
     }
     refresh(&state, affected, agent_relevant).await?;
     state

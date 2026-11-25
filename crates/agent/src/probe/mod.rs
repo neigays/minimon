@@ -166,10 +166,15 @@ pub struct ProbeScheduler {
 
 impl ProbeScheduler {
     pub fn new(results: mpsc::Sender<ProbeResult>) -> Self {
+        Self::with_icmp(results, Arc::new(IcmpState::new()))
+    }
+
+    /// 共享进程级的 ICMP 状态（跨重连保留「不可用」缓存）。
+    pub fn with_icmp(results: mpsc::Sender<ProbeResult>, icmp: Arc<IcmpState>) -> Self {
         Self {
             tx: results,
             sem: Arc::new(Semaphore::new(MAX_CONCURRENCY)),
-            icmp: Arc::new(IcmpState::new()),
+            icmp,
             tasks: HashMap::new(),
         }
     }
@@ -265,5 +270,14 @@ mod tests {
         assert_eq!(finish(&l, &[Fail::Other]).error, Some("探测失败"));
         // 部分成功不报错
         assert_eq!(finish(&[Some(1.0), None], &[Fail::Timeout]).error, None);
+    }
+
+    #[tokio::test]
+    async fn schedulers_share_process_level_icmp_state() {
+        let icmp = Arc::new(IcmpState::new());
+        let (tx, _rx) = mpsc::channel(1);
+        let a = ProbeScheduler::with_icmp(tx.clone(), icmp.clone());
+        let b = ProbeScheduler::with_icmp(tx, icmp.clone());
+        assert!(Arc::ptr_eq(&a.icmp, &icmp) && Arc::ptr_eq(&b.icmp, &icmp));
     }
 }
