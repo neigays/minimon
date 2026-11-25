@@ -253,8 +253,13 @@ async fn admin_flow_end_to_end() {
     let (_, guest) = json_of(port, "GET", "/api/nodes", None, None).await;
     assert!(find(&guest, id).is_none(), "隐藏节点不应对访客可见");
 
-    // 删除 → agent 被断开且不再入库
-    let (code, _) = json_of(
+    // 删除 → 会话被踢：先确认 agent 确实有活动会话，再订阅 live 事件
+    assert!(
+        f.state.registry().snapshot().iter().any(|(i, _)| *i == id),
+        "删除前 agent 应有在线会话"
+    );
+    let mut events = f.state.live().subscribe();
+    let (code, _, body) = http(
         port,
         "DELETE",
         &format!("/api/admin/nodes/{id}"),
@@ -262,19 +267,31 @@ async fn admin_flow_end_to_end() {
         Some("{}"),
     )
     .await;
-    assert!(code == 200 || code == 204, "删除返回 {code}");
+    assert_eq!(code, 204, "{body}");
+    let got_offline = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events.recv().await {
+                Ok(minimon_server::state::LiveEvent::Offline { node_id }) if node_id == id => {
+                    return;
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => panic!("live 通道已关闭"),
+            }
+        }
+    })
+    .await;
+    assert!(got_offline.is_ok(), "删除后应收到该节点的 Offline 事件");
     let (_, admin) = json_of(port, "GET", "/api/nodes", Some(&cookie), None).await;
     assert!(find(&admin, id).is_none());
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-    let c = rusqlite::Connection::open(&f.db_path).unwrap();
-    let cnt: i64 = c
-        .query_row(
-            "SELECT count(*) FROM metrics_raw WHERE node_id=?1",
-            [id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(cnt, 0, "删除后不应再有该节点数据");
+    // agent 会按退避重连（100~500ms），但旧 token 已失效，会话不得重新出现
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(3000);
+    while tokio::time::Instant::now() < deadline {
+        assert!(
+            !f.state.registry().snapshot().iter().any(|(i, _)| *i == id),
+            "删除后 agent 不应重新建立会话"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     let _ = agent_stop_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(5), agent)
