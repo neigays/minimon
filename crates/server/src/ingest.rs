@@ -49,7 +49,7 @@ impl IngestHandle {
     /// 入队一条上报。线程已退出（关停之后）时忽略。
     pub fn push(&self, node_id: i64, report: Report) {
         if self.tx.send(Cmd::Push(node_id, Box::new(report))).is_err() {
-            tracing::debug!(node_id, "ingest 已关闭，丢弃上报");
+            tracing::warn!(node_id, "ingest 已关闭，丢弃上报");
         }
     }
 

@@ -11,6 +11,7 @@ use ingest::IngestJoin;
 use state::AppState;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -34,19 +35,43 @@ pub async fn serve(
     serve_on(listener, state, ingest, shutdown).await
 }
 
+/// 停机时等待活跃 WS 会话 / HTTP 连接收尾的上限。
+const SESSION_DRAIN: Duration = Duration::from_secs(5);
+const HTTP_DRAIN: Duration = Duration::from_secs(10);
+
 /// 在已绑定的 listener 上提供服务（集成测试可绑定端口 0）。
 ///
-/// 关停顺序：先优雅停止 axum，再 flush 并回收入库线程。
+/// 关停顺序：信号到达 -> 通知 WS 会话（发 Close 并退出）-> axum 优雅停止
+/// -> 等待 WS 会话结束（有上限）-> flush 并回收入库线程。每一步都有上限。
 pub async fn serve_on(
     listener: tokio::net::TcpListener,
     state: AppState,
     ingest: IngestJoin,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let served = axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown)
-        .await
-        .context("HTTP 服务异常退出");
+    let mut stopping = state.shutdown_rx();
+    let sig_state = state.clone();
+    let signal = async move {
+        shutdown.await;
+        sig_state.begin_shutdown();
+    };
+    // axum 的优雅停机不管理 upgrade 后的连接；HTTP 连接迟迟不退出时也不能卡死进程。
+    let bounded_http = async move {
+        let _ = stopping.wait_for(|v| *v).await;
+        tokio::time::sleep(HTTP_DRAIN).await;
+    };
+    let serve = axum::serve(listener, router(state.clone())).with_graceful_shutdown(signal);
+    let served = tokio::select! {
+        r = serve.into_future() => r.context("HTTP 服务异常退出"),
+        _ = bounded_http => {
+            tracing::warn!("HTTP 连接未在时限内结束，强制继续停机");
+            Ok(())
+        }
+    };
+    state.begin_shutdown();
+    if !state.wait_sessions(SESSION_DRAIN).await {
+        tracing::warn!("部分 WS 会话未在时限内结束");
+    }
     // shutdown 会阻塞（写库 + join），放到阻塞线程池。
     if tokio::task::spawn_blocking(move || ingest.shutdown())
         .await

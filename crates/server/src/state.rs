@@ -6,9 +6,9 @@ pub use crate::ingest::IngestHandle;
 use crate::ingest::{DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH, IngestJoin};
 use minimon_common::protocol::{Hello, Report};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::{Notify, broadcast, oneshot, watch};
 
 const LIVE_CAPACITY: usize = 256;
 
@@ -19,6 +19,26 @@ pub struct AppState {
     live: LiveHub,
     pub(crate) ingest: IngestHandle,
     pub(crate) cfg: Arc<ServerConfig>,
+    shutdown: Arc<watch::Sender<bool>>,
+    sessions: Arc<SessionTracker>,
+}
+
+/// 活跃 WS 会话计数。upgrade 后的连接不受 axum 优雅停机管理，需自行等待。
+#[derive(Default)]
+struct SessionTracker {
+    active: AtomicUsize,
+    idle: Notify,
+}
+
+/// 会话存活期间持有；drop 时计数减一。
+pub struct SessionGuard(Arc<SessionTracker>);
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        if self.0.active.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.0.idle.notify_waiters();
+        }
+    }
 }
 
 impl AppState {
@@ -33,8 +53,38 @@ impl AppState {
             live,
             ingest,
             cfg: Arc::new(cfg),
+            shutdown: Arc::new(watch::channel(false).0),
+            sessions: Arc::default(),
         };
         (state, join)
+    }
+
+    pub(crate) fn session_guard(&self) -> SessionGuard {
+        self.sessions.active.fetch_add(1, Ordering::SeqCst);
+        SessionGuard(self.sessions.clone())
+    }
+
+    pub(crate) fn shutdown_rx(&self) -> watch::Receiver<bool> {
+        self.shutdown.subscribe()
+    }
+
+    /// 通知所有 WS 会话关闭。
+    pub(crate) fn begin_shutdown(&self) {
+        self.shutdown.send_replace(true);
+    }
+
+    /// 等待活跃会话归零，最多 `max`；返回是否已全部结束。
+    pub(crate) async fn wait_sessions(&self, max: std::time::Duration) -> bool {
+        let wait = async {
+            loop {
+                let notified = self.sessions.idle.notified();
+                if self.sessions.active.load(Ordering::SeqCst) == 0 {
+                    return;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout(max, wait).await.is_ok()
     }
 
     pub fn registry(&self) -> &Registry {

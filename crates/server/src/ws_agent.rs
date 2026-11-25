@@ -46,7 +46,10 @@ pub async fn handler(
         }
         None => None,
     };
+    // guard 在 upgrade 之前取得，确保停机时不会漏掉刚接入的会话。
+    let guard = state.session_guard();
     ws.on_upgrade(move |socket| async move {
+        let _guard = guard;
         match node_id {
             Some(id) => session(state, id, socket).await,
             None => {
@@ -154,11 +157,16 @@ async fn run(
     mut kick_rx: oneshot::Receiver<()>,
     socket: &mut WebSocket,
 ) {
+    let mut shutdown = state.shutdown_rx();
     let mut ping = interval(PING_INTERVAL);
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_seen = Instant::now();
     loop {
         tokio::select! {
+            _ = async { let _ = shutdown.wait_for(|v| *v).await; } => {
+                close(socket).await;
+                return;
+            }
             _ = &mut kick_rx => {
                 reject(socket, ErrorCode::Replaced, "同一 token 有新连接，当前连接被替换").await;
                 return;
