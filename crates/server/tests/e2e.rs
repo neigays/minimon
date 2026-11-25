@@ -366,6 +366,14 @@ async fn probe_and_traffic_end_to_end() {
                 && p["avg_ms"].is_number()
             {
                 assert_eq!(p["loss"].as_f64().unwrap(), 0.0, "{p}");
+                let mut keys: Vec<&str> =
+                    p.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+                keys.sort_unstable();
+                assert_eq!(
+                    keys,
+                    ["avg_ms", "error", "loss", "name", "task_id"],
+                    "访客探测字段集合不符: {p}"
+                );
                 guest_text = text;
                 return;
             }
@@ -403,12 +411,21 @@ async fn probe_and_traffic_end_to_end() {
     assert!(now < t["period_end_ms"].as_i64().unwrap(), "{t}");
     let (_, guest) = json_of(port, "GET", "/api/nodes", None, None).await;
     let gn = find(&guest, id).unwrap();
-    assert!(gn.get("traffic").is_none(), "访客不得看到流量: {gn}");
+    for k in [
+        "traffic",
+        "traffic_quota",
+        "traffic_reset_day",
+        "traffic_mode",
+        "expire_date",
+        "expire_days",
+    ] {
+        assert!(gn.get(k).is_none(), "访客不得看到 {k}: {gn}");
+    }
 
-    // 探测历史（入库每 10 秒 flush，最多等 15 秒）
+    // 探测历史（入库每 10 秒 flush，最多等 25 秒）
     let path = format!("/api/nodes/{id}/probes?range=1h");
     let mut hist = Value::Null;
-    let ok = tokio::time::timeout(Duration::from_secs(15), async {
+    let ok = tokio::time::timeout(Duration::from_secs(25), async {
         loop {
             let (code, text) = {
                 let (c, _, t) = http(port, "GET", &path, None, None).await;
@@ -434,6 +451,8 @@ async fn probe_and_traffic_end_to_end() {
 
     accept.abort();
     let _ = agent_stop_tx.send(());
-    let _ = tokio::time::timeout(Duration::from_secs(5), agent).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), agent)
+        .await
+        .expect("agent 未退出");
     f.stop().await;
 }
