@@ -23,7 +23,7 @@ async fn start() -> Fixture {
     let db = Arc::new(Db::open_in_memory().unwrap());
     let (node, token) = db.add_node("n1").unwrap();
     let cfg = ServerConfig::default();
-    let (state, ingest) = AppState::new(db, cfg);
+    let (state, ingest) = AppState::new(db, cfg).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(minimon_server::serve_on(

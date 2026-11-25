@@ -53,7 +53,7 @@ async fn shutdown_with_connected_agent_closes_it_and_flushes() {
     let path = dir.path().join("t.db");
     let db = Arc::new(Db::open(&path).unwrap());
     let (node, token) = db.add_node("n1").unwrap();
-    let (state, ingest) = AppState::new(db, ServerConfig::default());
+    let (state, ingest) = AppState::new(db, ServerConfig::default()).unwrap();
     let probe = state.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

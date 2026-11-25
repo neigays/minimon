@@ -1,7 +1,7 @@
 //! 共享状态：在线表、实时事件广播、入库句柄。
 
 use crate::config::ServerConfig;
-use crate::db::Db;
+use crate::db::{Db, DbError, Node};
 pub use crate::ingest::IngestHandle;
 use crate::ingest::{DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH, IngestJoin};
 use minimon_common::protocol::{Hello, Report};
@@ -17,6 +17,8 @@ pub struct AppState {
     pub(crate) db: Arc<Db>,
     registry: Registry,
     live: LiveHub,
+    /// 启动时加载的节点列表（M1 静态，新增节点需重启）。
+    pub(crate) nodes: Arc<Vec<Node>>,
     pub(crate) ingest: IngestHandle,
     pub(crate) cfg: Arc<ServerConfig>,
     shutdown: Arc<watch::Sender<bool>>,
@@ -43,7 +45,8 @@ impl Drop for SessionGuard {
 
 impl AppState {
     /// 创建状态并启动入库线程；`IngestJoin` 交给负责关停的一方（`serve_on`）。
-    pub fn new(db: Arc<Db>, cfg: ServerConfig) -> (Self, IngestJoin) {
+    pub fn new(db: Arc<Db>, cfg: ServerConfig) -> Result<(Self, IngestJoin), DbError> {
+        let nodes = Arc::new(db.list_nodes()?);
         let live = LiveHub::new();
         let (ingest, join) =
             IngestHandle::spawn(db.clone(), DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH);
@@ -51,12 +54,13 @@ impl AppState {
             db,
             registry: Registry::new(live.clone()),
             live,
+            nodes,
             ingest,
             cfg: Arc::new(cfg),
             shutdown: Arc::new(watch::channel(false).0),
             sessions: Arc::default(),
         };
-        (state, join)
+        Ok((state, join))
     }
 
     pub(crate) fn session_guard(&self) -> SessionGuard {

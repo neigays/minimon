@@ -5,12 +5,14 @@ use std::fmt::Write;
 
 use super::{Db, DbError, now_ms};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub id: i64,
     pub name: String,
     pub sort: i64,
     pub hidden: bool,
+    /// 最近一次 Hello（info_json）；从未上线或解析失败时为 None。
+    pub info: Option<Hello>,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -34,12 +36,23 @@ pub fn generate_token() -> String {
     hex(&buf)
 }
 
+fn parse_info(id: i64, json: Option<String>) -> Option<Hello> {
+    match serde_json::from_str(&json?) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            tracing::warn!(node_id = id, error = %e, "info_json 解析失败，忽略");
+            None
+        }
+    }
+}
+
 fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     Ok(Node {
         id: r.get(0)?,
         name: r.get(1)?,
         sort: r.get(2)?,
         hidden: r.get::<_, i64>(3)? != 0,
+        info: parse_info(r.get(0)?, r.get::<_, Option<String>>(4)?),
     })
 }
 
@@ -60,6 +73,7 @@ impl Db {
             name: name.to_string(),
             sort: 0,
             hidden: false,
+            info: None,
         };
         Ok((node, token))
     }
@@ -67,7 +81,7 @@ impl Db {
     pub fn list_nodes(&self) -> Result<Vec<Node>, DbError> {
         self.read(|c| {
             let mut stmt =
-                c.prepare("SELECT id, name, sort, hidden FROM nodes ORDER BY sort, id")?;
+                c.prepare("SELECT id, name, sort, hidden, info_json FROM nodes ORDER BY sort, id")?;
             let rows = stmt.query_map([], row_to_node)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
@@ -77,7 +91,7 @@ impl Db {
         let hash = hash_token(token);
         self.read(|c| {
             Ok(c.query_row(
-                "SELECT id, name, sort, hidden FROM nodes WHERE token_hash = ?1",
+                "SELECT id, name, sort, hidden, info_json FROM nodes WHERE token_hash = ?1",
                 [hash],
                 row_to_node,
             )

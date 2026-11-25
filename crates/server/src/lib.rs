@@ -1,6 +1,7 @@
 pub mod config;
 pub mod db;
 mod ingest;
+mod live;
 pub mod state;
 mod ws_agent;
 
@@ -16,6 +17,8 @@ use std::time::Duration;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/agent/ws", get(ws_agent::handler))
+        .route("/api/nodes", get(live::nodes))
+        .route("/api/live", get(live::ws))
         .with_state(state)
 }
 
@@ -31,7 +34,7 @@ pub async fn serve(
         .await
         .with_context(|| format!("监听 {} 失败", cfg.listen))?;
     tracing::info!(listen = %cfg.listen, "server 已启动");
-    let (state, ingest) = AppState::new(db, cfg);
+    let (state, ingest) = AppState::new(db, cfg).context("加载节点列表失败")?;
     serve_on(listener, state, ingest, shutdown).await
 }
 
