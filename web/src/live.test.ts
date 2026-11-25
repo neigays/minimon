@@ -2,8 +2,9 @@ import { expect, test } from 'vitest'
 import { applyMsg, isLive, liveUrl, type PublicNode, type Report } from './live'
 
 const node = (id: number, online = false): PublicNode => ({
-  id, name: `n${id}`, online, sort: 0, os: null, arch: null,
-  cpu_cores: null, mem_total: null, swap_total: null, disk_total: null, latest: null,
+  id, name: `n${id}`, online, sort: 0, group: '', region: '', os: null, arch: null,
+  cpu_model: null, cpu_cores: null, virtualization: null, mem_total: null, swap_total: null,
+  disk_total: null, last_seen_ms: null, latest: null,
 })
 const report = { cpu: 5 } as Report
 

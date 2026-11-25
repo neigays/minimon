@@ -25,3 +25,8 @@ export function formatUptime(secs: number): string {
   if (m > 0) return `${m}分`
   return `${s}秒`
 }
+
+/** 紧凑字节数（卡片进度条旁用）：1.2G、340K。 */
+export function formatShort(n: number): string {
+  return formatBytes(n).replace('iB', '').replace(' B', 'B').replace(' ', '')
+}

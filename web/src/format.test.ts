@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { formatBytes, formatRate, formatUptime } from './format'
+import { formatBytes, formatRate, formatShort, formatUptime } from './format'
 
 test('bytes', () => {
   expect(formatBytes(0)).toBe('0 B')
@@ -12,4 +12,10 @@ test('rate', () => {
 test('uptime', () => {
   expect(formatUptime(59)).toBe('59秒')
   expect(formatUptime(90061)).toBe('1天 1小时')
+})
+test('short', () => {
+  expect(formatShort(0)).toBe('0B')
+  expect(formatShort(512)).toBe('512B')
+  expect(formatShort(1.5 * 1024 ** 3)).toBe('1.5G')
+  expect(formatShort(40 * 1024 ** 3)).toBe('40.0G')
 })
