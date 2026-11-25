@@ -1,5 +1,7 @@
+mod aggregate;
 mod metrics;
 pub mod nodes;
+pub mod rollup;
 
 use rusqlite::{Connection, OpenFlags};
 use rusqlite_migration::{M, Migrations};

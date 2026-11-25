@@ -1,0 +1,477 @@
+//! 三级降采样：raw -> metrics_1m -> metrics_15m，以及保留期清理。
+//!
+//! 聚合在 Rust 里完成（纯函数），以 `INSERT OR REPLACE` 写入，因此幂等。
+
+use rusqlite::{Connection, OptionalExtension, Row, params};
+
+pub use super::aggregate::{
+    AggRow, MINUTE_MS, QUARTER_MS, ROLLUP_LAG_MS, RawSample, RollupStats, counter_delta,
+};
+use super::aggregate::{aggregate_raw, merge_buckets};
+use super::{Db, DbError};
+
+use super::aggregate::bucket_start;
+
+// ---------------------------------------------------------------- DB 胶水
+
+const AGG_COLS: &str = "node_id, ts_ms, samples, cpu, mem_used, swap_used, disk_used, disk_total, \
+     net_rx_rate, net_tx_rate, load1, load5, load15, process_count, tcp_count, udp_count, \
+     cpu_max, mem_used_max, net_rx_rate_max, net_tx_rate_max, net_rx_delta, net_tx_delta, \
+     net_rx_bytes, net_tx_bytes, uptime_secs";
+
+fn agg_from_row(r: &Row<'_>) -> rusqlite::Result<AggRow> {
+    let f = |i: usize| -> rusqlite::Result<f64> { Ok(r.get::<_, Option<f64>>(i)?.unwrap_or(0.0)) };
+    let n = |i: usize| -> rusqlite::Result<i64> { Ok(r.get::<_, Option<i64>>(i)?.unwrap_or(0)) };
+    Ok(AggRow {
+        node_id: r.get(0)?,
+        ts_ms: r.get(1)?,
+        samples: r.get(2)?,
+        cpu: f(3)?,
+        mem_used: f(4)?,
+        swap_used: f(5)?,
+        disk_used: f(6)?,
+        disk_total: f(7)?,
+        net_rx_rate: f(8)?,
+        net_tx_rate: f(9)?,
+        load1: f(10)?,
+        load5: f(11)?,
+        load15: f(12)?,
+        process_count: f(13)?,
+        tcp_count: f(14)?,
+        udp_count: f(15)?,
+        cpu_max: f(16)?,
+        mem_used_max: n(17)?,
+        net_rx_rate_max: n(18)?,
+        net_tx_rate_max: n(19)?,
+        net_rx_delta: n(20)?,
+        net_tx_delta: n(21)?,
+        net_rx_bytes: n(22)?,
+        net_tx_bytes: n(23)?,
+        uptime_secs: n(24)?,
+    })
+}
+
+const RAW_COLS: &str = "ts_ms, cpu, mem_used, swap_used, disk_used, disk_total, net_rx_bytes, \
+     net_tx_bytes, net_rx_rate, net_tx_rate, load1, load5, load15, uptime_secs, process_count, \
+     tcp_count, udp_count";
+
+fn raw_from_row(r: &Row<'_>) -> rusqlite::Result<RawSample> {
+    let f = |i: usize| -> rusqlite::Result<f64> { Ok(r.get::<_, Option<f64>>(i)?.unwrap_or(0.0)) };
+    let n = |i: usize| -> rusqlite::Result<i64> { Ok(r.get::<_, Option<i64>>(i)?.unwrap_or(0)) };
+    Ok(RawSample {
+        ts_ms: r.get(0)?,
+        cpu: f(1)?,
+        mem_used: n(2)?,
+        swap_used: n(3)?,
+        disk_used: n(4)?,
+        disk_total: n(5)?,
+        net_rx_bytes: n(6)?,
+        net_tx_bytes: n(7)?,
+        net_rx_rate: n(8)?,
+        net_tx_rate: n(9)?,
+        load1: f(10)?,
+        load5: f(11)?,
+        load15: f(12)?,
+        uptime_secs: n(13)?,
+        process_count: n(14)?,
+        tcp_count: n(15)?,
+        udp_count: n(16)?,
+    })
+}
+
+fn write_agg(conn: &Connection, table: &str, rows: &[AggRow]) -> Result<(), DbError> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "INSERT OR REPLACE INTO {table} ({AGG_COLS}) VALUES \
+         (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)"
+    ))?;
+    for r in rows {
+        stmt.execute(params![
+            r.node_id,
+            r.ts_ms,
+            r.samples,
+            r.cpu,
+            r.mem_used,
+            r.swap_used,
+            r.disk_used,
+            r.disk_total,
+            r.net_rx_rate,
+            r.net_tx_rate,
+            r.load1,
+            r.load5,
+            r.load15,
+            r.process_count,
+            r.tcp_count,
+            r.udp_count,
+            r.cpu_max,
+            r.mem_used_max,
+            r.net_rx_rate_max,
+            r.net_tx_rate_max,
+            r.net_rx_delta,
+            r.net_tx_delta,
+            r.net_rx_bytes,
+            r.net_tx_bytes,
+            r.uptime_secs,
+        ])?;
+    }
+    Ok(())
+}
+
+/// 目标表中该节点的最后一行（桶起点最大）。
+fn last_agg(conn: &Connection, table: &str, node_id: i64) -> Result<Option<AggRow>, DbError> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT {AGG_COLS} FROM {table} WHERE node_id = ?1 ORDER BY ts_ms DESC LIMIT 1"
+            ),
+            [node_id],
+            agg_from_row,
+        )
+        .optional()?)
+}
+
+/// raw -> 1m：处理 [lo, end) 内的样本，返回写入行数。
+fn rollup_raw_node(conn: &Connection, node_id: i64, end: i64) -> Result<usize, DbError> {
+    let last = last_agg(conn, "metrics_1m", node_id)?;
+    let lo = last.as_ref().map_or(i64::MIN, |r| r.ts_ms + MINUTE_MS);
+    let samples: Vec<RawSample> = {
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {RAW_COLS} FROM metrics_raw WHERE node_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 \
+             ORDER BY ts_ms"
+        ))?;
+        stmt.query_map(params![node_id, lo, end], raw_from_row)?
+            .collect::<Result<_, _>>()?
+    };
+    let Some(first) = samples.first() else {
+        return Ok(0);
+    };
+    let prev = match last {
+        Some(r) => Some((r.net_rx_bytes, r.net_tx_bytes)),
+        None => conn
+            .query_row(
+                "SELECT net_rx_bytes, net_tx_bytes FROM metrics_raw \
+                 WHERE node_id = ?1 AND ts_ms < ?2 ORDER BY ts_ms DESC LIMIT 1",
+                params![node_id, first.ts_ms],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                        r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    ))
+                },
+            )
+            .optional()?,
+    };
+    let rows = aggregate_raw(node_id, prev, &samples, MINUTE_MS);
+    write_agg(conn, "metrics_1m", &rows)?;
+    Ok(rows.len())
+}
+
+/// 1m -> 15m。
+fn rollup_1m_node(conn: &Connection, node_id: i64, end: i64) -> Result<usize, DbError> {
+    let lo = last_agg(conn, "metrics_15m", node_id)?.map_or(i64::MIN, |r| r.ts_ms + QUARTER_MS);
+    let src: Vec<AggRow> = {
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {AGG_COLS} FROM metrics_1m WHERE node_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 \
+             ORDER BY ts_ms"
+        ))?;
+        stmt.query_map(params![node_id, lo, end], agg_from_row)?
+            .collect::<Result<_, _>>()?
+    };
+    let rows = merge_buckets(node_id, &src, QUARTER_MS);
+    write_agg(conn, "metrics_15m", &rows)?;
+    Ok(rows.len())
+}
+
+impl Db {
+    /// 聚合所有已结束（桶终点 <= now - lag）且尚未聚合的桶；先 raw->1m 再 1m->15m。
+    /// 每 `batch_nodes` 个节点提交一次事务，避免长时间占用写连接。
+    pub fn rollup(
+        &self,
+        now_ms: i64,
+        lag_ms: i64,
+        batch_nodes: usize,
+    ) -> Result<RollupStats, DbError> {
+        let horizon = now_ms - lag_ms;
+        let end_1m = bucket_start(horizon, MINUTE_MS);
+        let end_15m = bucket_start(horizon, QUARTER_MS);
+        let ids: Vec<i64> = self.read(|c| {
+            let mut stmt = c.prepare("SELECT id FROM nodes ORDER BY id")?;
+            Ok(stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<_, _>>()?)
+        })?;
+        let mut stats = RollupStats::default();
+        for chunk in ids.chunks(batch_nodes.max(1)) {
+            let (m1, m15) = self.write(|c| {
+                let tx = c.transaction()?;
+                let (mut m1, mut m15) = (0, 0);
+                for &id in chunk {
+                    m1 += rollup_raw_node(&tx, id, end_1m)?;
+                    m15 += rollup_1m_node(&tx, id, end_15m)?;
+                }
+                tx.commit()?;
+                Ok((m1, m15))
+            })?;
+            stats.m1 += m1;
+            stats.m15 += m15;
+        }
+        Ok(stats)
+    }
+
+    /// 按保留期删除过期数据，返回删除的总行数。
+    pub fn prune(
+        &self,
+        now_ms: i64,
+        raw_ms: i64,
+        m1_ms: i64,
+        m15_ms: i64,
+    ) -> Result<usize, DbError> {
+        self.write(|c| {
+            let tx = c.transaction()?;
+            let mut n = 0;
+            for (table, keep) in [
+                ("metrics_raw", raw_ms),
+                ("metrics_1m", m1_ms),
+                ("metrics_15m", m15_ms),
+            ] {
+                n += tx.execute(
+                    &format!("DELETE FROM {table} WHERE ts_ms < ?1"),
+                    [now_ms - keep],
+                )?;
+            }
+            tx.commit()?;
+            Ok(n)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIN: i64 = MINUTE_MS;
+
+    fn s(ts_ms: i64, cpu: f64, rx: i64) -> RawSample {
+        RawSample {
+            ts_ms,
+            cpu,
+            net_rx_bytes: rx,
+            mem_used: 100,
+            ..Default::default()
+        }
+    }
+
+    fn agg(ts_ms: i64, samples: i64, cpu: f64, delta: i64, cpu_max: f64) -> AggRow {
+        AggRow {
+            node_id: 1,
+            ts_ms,
+            samples,
+            cpu,
+            cpu_max,
+            net_rx_delta: delta,
+            net_rx_bytes: ts_ms,
+            ..Default::default()
+        }
+    }
+
+    fn db_with_raw(from_ms: i64, to_ms: i64, step_ms: i64) -> (Db, i64) {
+        let db = Db::open_in_memory().expect("db");
+        let (node, _) = db.add_node("n1").expect("node");
+        db.write(|c| {
+            let tx = c.transaction()?;
+            let mut t = from_ms;
+            while t < to_ms {
+                tx.execute(
+                    "INSERT INTO metrics_raw (node_id, ts_ms, cpu, mem_used, net_rx_bytes, \
+                     net_tx_bytes) VALUES (?1, ?2, 10.0, 100, ?3, 0)",
+                    params![node.id, t, t / 1000],
+                )?;
+                t += step_ms;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .expect("seed");
+        (db, node.id)
+    }
+
+    fn count(db: &Db, table: &str) -> i64 {
+        db.read(|c| Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?))
+            .expect("count")
+    }
+
+    #[test]
+    fn delta_rules() {
+        assert_eq!(counter_delta(None, 500), 0);
+        assert_eq!(counter_delta(Some(100), 350), 250);
+        assert_eq!(counter_delta(Some(10_000), 300), 300);
+    }
+
+    #[test]
+    fn raw_to_1m_avg_max_delta_last() {
+        let rows = aggregate_raw(
+            1,
+            Some((900, 0)),
+            &[
+                s(60_000, 10., 1000),
+                s(63_000, 20., 1500),
+                s(66_000, 60., 1700),
+            ],
+            60_000,
+        );
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!((r.ts_ms, r.samples), (60_000, 3));
+        assert!((r.cpu - 30.0).abs() < 1e-9);
+        assert_eq!(r.cpu_max, 60.0);
+        assert_eq!(r.mem_used_max, 100);
+        assert!((r.mem_used - 100.0).abs() < 1e-9);
+        assert_eq!(r.net_rx_delta, 800);
+        assert_eq!(r.net_rx_bytes, 1700);
+    }
+
+    #[test]
+    fn counter_drop_inside_bucket() {
+        let rows = aggregate_raw(
+            1,
+            None,
+            &[s(60_000, 1., 1000), s(63_000, 1., 200), s(66_000, 1., 500)],
+            60_000,
+        );
+        assert_eq!(rows[0].net_rx_delta, 200 + 300);
+        assert_eq!(rows[0].net_rx_bytes, 500);
+    }
+
+    #[test]
+    fn splits_buckets_on_boundary() {
+        let rows = aggregate_raw(1, None, &[s(119_999, 1., 10), s(120_000, 1., 30)], 60_000);
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].ts_ms, rows[1].ts_ms), (60_000, 120_000));
+        // 桶首样本与上一桶最后样本比较
+        assert_eq!(rows[1].net_rx_delta, 20);
+    }
+
+    #[test]
+    fn merge_is_weighted_by_samples() {
+        let rows = merge_buckets(
+            1,
+            &[agg(0, 10, 10.0, 5, 20.0), agg(60_000, 30, 50.0, 7, 90.0)],
+            QUARTER_MS,
+        );
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.samples, 40);
+        assert!((r.cpu - 40.0).abs() < 1e-9);
+        assert_eq!(r.cpu_max, 90.0);
+        assert_eq!(r.net_rx_delta, 12);
+        assert_eq!(r.net_rx_bytes, 60_000);
+    }
+
+    #[test]
+    fn rollup_only_closed_buckets_and_idempotent() {
+        let (db, _) = db_with_raw(0, 5 * MIN, 5_000);
+        let now = 5 * MIN + ROLLUP_LAG_MS - 1;
+        let st = db.rollup(now, ROLLUP_LAG_MS, 10).expect("rollup");
+        assert_eq!(st.m1, 4);
+        assert_eq!(count(&db, "metrics_1m"), 4);
+        let snapshot = |db: &Db| -> Vec<(i64, i64, f64, i64)> {
+            db.read(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT ts_ms, samples, cpu, net_rx_delta FROM metrics_1m ORDER BY ts_ms",
+                )?;
+                Ok(stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                    .collect::<Result<_, _>>()?)
+            })
+            .expect("snap")
+        };
+        let before = snapshot(&db);
+        assert_eq!(before[0].1, 12);
+        // 首桶无 prev：delta 为桶内相邻样本差 11 * 5
+        assert_eq!(before[0].3, 55);
+        // 之后的桶接上一桶最后值：12 个样本 * 5
+        assert_eq!(before[1].3, 60);
+        let st = db.rollup(now, ROLLUP_LAG_MS, 10).expect("again");
+        assert_eq!(st.m1, 0);
+        assert_eq!(snapshot(&db), before);
+        db.rollup(5 * MIN + ROLLUP_LAG_MS, ROLLUP_LAG_MS, 10)
+            .expect("advance");
+        let after = snapshot(&db);
+        assert_eq!(after.len(), 5);
+        assert_eq!(&after[..4], &before[..]);
+        assert_eq!(after[4].3, 60);
+    }
+
+    #[test]
+    fn catch_up_after_downtime() {
+        for batch in [1, 50] {
+            let h = 3 * 60 * MIN;
+            let (db, _) = db_with_raw(0, h, 5_000);
+            db.rollup(h + ROLLUP_LAG_MS, ROLLUP_LAG_MS, batch)
+                .expect("rollup");
+            assert_eq!(count(&db, "metrics_1m"), 180, "batch={batch}");
+            assert_eq!(count(&db, "metrics_15m"), 12, "batch={batch}");
+        }
+    }
+
+    #[test]
+    fn catch_up_commits_per_batch() {
+        let db = Db::open_in_memory().expect("db");
+        for i in 0..3 {
+            db.add_node(&format!("n{i}")).expect("node");
+        }
+        // 无数据也应正常按批次运行
+        assert_eq!(
+            db.rollup(10 * MIN, ROLLUP_LAG_MS, 1).expect("rollup"),
+            RollupStats::default()
+        );
+    }
+
+    #[test]
+    fn fifteen_min_waits_for_closed_bucket() {
+        let (db, _) = db_with_raw(0, 20 * MIN, 5_000);
+        // 15m 桶终点 = 15min；now - lag = 14min -> 未结束
+        db.rollup(14 * MIN + ROLLUP_LAG_MS, ROLLUP_LAG_MS, 10)
+            .expect("r1");
+        assert_eq!(count(&db, "metrics_1m"), 14);
+        assert_eq!(count(&db, "metrics_15m"), 0);
+        db.rollup(15 * MIN + ROLLUP_LAG_MS, ROLLUP_LAG_MS, 10)
+            .expect("r2");
+        assert_eq!(count(&db, "metrics_15m"), 1);
+        let samples: i64 = db
+            .read(|c| Ok(c.query_row("SELECT samples FROM metrics_15m", [], |r| r.get(0))?))
+            .expect("q");
+        assert_eq!(samples, 15 * 12);
+    }
+
+    #[test]
+    fn prune_by_retention() {
+        let db = Db::open_in_memory().expect("db");
+        let (node, _) = db.add_node("n").expect("node");
+        let now = 1_000_000_000i64;
+        let (raw, m1, m15) = (1000, 2000, 3000);
+        db.write(|c| {
+            for t in [now - raw - 1, now - raw + 1] {
+                c.execute(
+                    "INSERT INTO metrics_raw (node_id, ts_ms) VALUES (?1, ?2)",
+                    params![node.id, t],
+                )?;
+            }
+            for (table, keep) in [("metrics_1m", m1), ("metrics_15m", m15)] {
+                for t in [now - keep - 1, now - keep + 1] {
+                    c.execute(
+                        &format!(
+                            "INSERT INTO {table} (node_id, ts_ms, samples) VALUES (?1, ?2, 1)"
+                        ),
+                        params![node.id, t],
+                    )?;
+                }
+            }
+            Ok(())
+        })
+        .expect("seed");
+        assert_eq!(db.prune(now, raw, m1, m15).expect("prune"), 3);
+        for t in ["metrics_raw", "metrics_1m", "metrics_15m"] {
+            assert_eq!(count(&db, t), 1, "{t}");
+        }
+    }
+}

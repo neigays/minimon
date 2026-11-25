@@ -2,6 +2,7 @@ pub mod config;
 pub mod db;
 mod ingest;
 mod live;
+mod rollup;
 pub mod state;
 mod web;
 mod ws_agent;
@@ -43,17 +44,19 @@ pub async fn serve(
 /// 停机时等待活跃 WS 会话 / HTTP 连接收尾的上限。
 const SESSION_DRAIN: Duration = Duration::from_secs(5);
 const HTTP_DRAIN: Duration = Duration::from_secs(10);
+const ROLLUP_DRAIN: Duration = Duration::from_secs(10);
 
 /// 在已绑定的 listener 上提供服务（集成测试可绑定端口 0）。
 ///
 /// 关停顺序：信号到达 -> 通知 WS 会话（发 Close 并退出）-> axum 优雅停止
-/// -> 等待 WS 会话结束（有上限）-> flush 并回收入库线程。每一步都有上限。
+/// -> 等待 WS 会话结束（有上限）-> flush 并回收入库线程 -> 等待 rollup 任务。每一步都有上限。
 pub async fn serve_on(
     listener: tokio::net::TcpListener,
     state: AppState,
     ingest: IngestJoin,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
+    let rollup = rollup::spawn(state.db.clone(), &state.cfg, state.shutdown_rx());
     let mut stopping = state.shutdown_rx();
     let sig_state = state.clone();
     let signal = async move {
@@ -83,6 +86,9 @@ pub async fn serve_on(
         .is_err()
     {
         tracing::error!("ingest 关停任务异常");
+    }
+    if tokio::time::timeout(ROLLUP_DRAIN, rollup).await.is_err() {
+        tracing::warn!("rollup 任务未在时限内结束");
     }
     served
 }
