@@ -272,9 +272,9 @@ async fn remove(
     if !blocking(move || db.delete_node(id)).await? {
         return Err(ApiError::not_found(MSG_NO_NODE));
     }
-    // 无外键：探测关联与数据在代码里清理。失败只记日志（保留期清理会兜底），节点已删除。
+    // 关联已随节点行同事务删除；探测数据清理失败只记日志（保留期会兜底）。
     let db = state.db.clone();
-    if let Err(e) = blocking(move || db.delete_probe_data_for_node(id)).await {
+    if let Err(e) = blocking(move || db.purge_probe_data_for_node(id)).await {
         tracing::error!(node_id = id, "删除节点后清理探测数据失败: {e:?}");
     }
     // id 会被 SQLite 复用：内存里的最后已知上报必须一并清掉。

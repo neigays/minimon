@@ -229,6 +229,8 @@ impl Db {
             for t in ["metrics_raw", "metrics_1m", "metrics_15m"] {
                 tx.execute(&format!("DELETE FROM {t} WHERE node_id = ?1"), [id])?;
             }
+            // 无外键：探测任务关联与节点行同一事务删除。
+            tx.execute("DELETE FROM probe_task_nodes WHERE node_id = ?1", [id])?;
             let n = tx.execute("DELETE FROM nodes WHERE id = ?1", [id])?;
             tx.commit()?;
             Ok(n > 0)

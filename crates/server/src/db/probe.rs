@@ -158,7 +158,8 @@ impl Db {
 
     pub fn create_probe_task(&self, t: &NewProbeTask) -> Result<ProbeTaskRow, DbError> {
         let mut v = self.create_probe_tasks(std::slice::from_ref(t))?;
-        v.pop().ok_or(DbError::Poisoned)
+        v.pop()
+            .ok_or_else(|| DbError::Other("创建探测任务后未读到记录".into()))
     }
 
     /// 单事务创建多个任务（三网模板用）。
@@ -251,19 +252,19 @@ impl Db {
         })
     }
 
-    /// 删除任务、它的节点关联，以及 `probe_raw/probe_5m` 里的全部数据。
+    /// 删除任务行与它的节点关联（单事务）；不存在返回 false。数据清理见 `purge_probe_task_data`。
     pub fn delete_probe_task(&self, id: i64) -> Result<bool, DbError> {
-        // 先删任务行与关联（之后不再下发），再分批清数据。
-        let existed = self.write(|c| {
+        self.write(|c| {
             let tx = c.transaction()?;
             tx.execute("DELETE FROM probe_task_nodes WHERE task_id = ?1", [id])?;
             let n = tx.execute("DELETE FROM probe_tasks WHERE id = ?1", [id])?;
             tx.commit()?;
             Ok(n > 0)
-        })?;
-        if !existed {
-            return Ok(false);
-        }
+        })
+    }
+
+    /// 分批清除某任务在 `probe_raw/probe_5m` 的全部数据。
+    pub fn purge_probe_task_data(&self, id: i64) -> Result<(), DbError> {
         let nodes: Vec<i64> = self.read(|c| {
             let mut stmt = c.prepare(
                 "SELECT node_id FROM probe_raw WHERE task_id = ?1 \
@@ -273,16 +274,11 @@ impl Db {
                 .query_map([id], |r| r.get(0))?
                 .collect::<Result<_, _>>()?)
         })?;
-        purge_pairs(self, nodes.into_iter().map(|n| (id, n)).collect())?;
-        Ok(true)
+        purge_pairs(self, nodes.into_iter().map(|n| (id, n)).collect())
     }
 
-    /// 节点被删除：清它的任务关联与全部探测数据。
-    pub fn delete_probe_data_for_node(&self, node_id: i64) -> Result<(), DbError> {
-        self.write(|c| {
-            c.execute("DELETE FROM probe_task_nodes WHERE node_id = ?1", [node_id])?;
-            Ok(())
-        })?;
+    /// 节点被删除：清它的全部探测数据（任务关联已在 `delete_node` 事务内删除）。
+    pub fn purge_probe_data_for_node(&self, node_id: i64) -> Result<(), DbError> {
         let tasks: Vec<i64> = self.read(|c| {
             // 递归 CTE 松散扫描主键前缀：每个 task_id 只探一次。
             let mut stmt = c.prepare(

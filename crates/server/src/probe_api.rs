@@ -99,6 +99,10 @@ fn valid_port(p: &str) -> bool {
 }
 
 fn validate_target(kind: ProbeKind, target: &str) -> Result<(), ApiError> {
+    let cap = if kind == ProbeKind::Http { 2048 } else { 255 };
+    if target.len() > cap {
+        return Err(ApiError::bad_request("目标地址过长"));
+    }
     if target.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(ApiError::bad_request("目标地址不能包含空白字符"));
     }
@@ -138,6 +142,14 @@ fn ranged(v: i64, lo: i64, hi: i64, msg: &str) -> Result<u32, ApiError> {
         u32::try_from(v).map_err(|_| ApiError::bad_request(msg))
     } else {
         Err(ApiError::bad_request(msg))
+    }
+}
+
+fn validate_sort(v: i64) -> Result<i64, ApiError> {
+    if (0..=1_000_000).contains(&v) {
+        Ok(v)
+    } else {
+        Err(ApiError::bad_request("排序值需为 0 到 1000000"))
     }
 }
 
@@ -265,7 +277,7 @@ async fn update(
         all_nodes: req.all_nodes,
         node_ids: links,
         show_on_card: req.show_on_card,
-        sort: req.sort,
+        sort: req.sort.map(validate_sort).transpose()?,
     };
     let db = state.db.clone();
     if !blocking(move || db.update_probe_task(id, &patch)).await? {
@@ -290,7 +302,12 @@ async fn remove(
     if !blocking(move || db.delete_probe_task(id)).await? {
         return Err(ApiError::not_found(MSG_NO_TASK));
     }
+    // 先刷新缓存（任务不再下发），再清数据：清理失败只记日志，数据由保留期兜底。
     refresh(&state).await?;
+    let db = state.db.clone();
+    if let Err(e) = blocking(move || db.purge_probe_task_data(id)).await {
+        tracing::error!(task_id = id, "删除探测任务后清理数据失败: {e:?}");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

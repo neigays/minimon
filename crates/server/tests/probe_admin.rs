@@ -391,3 +391,94 @@ async fn probe_admin_requires_login() {
         assert_eq!(c, 401, "{m} {p}: {body}");
     }
 }
+
+#[tokio::test]
+async fn target_length_and_sort_caps() {
+    let f = start(|_| {}).await;
+    let ck = login(f.port).await;
+    // icmp/tcp 上限 255：用多段合法域名凑长度
+    let dom = |n: usize| vec!["a".repeat(50); n].join(".");
+    for (kind, target) in [
+        ("icmp", dom(6)),
+        ("tcp", format!("{}:80", dom(6))),
+        ("http", format!("http://example.com/{}", "a".repeat(2048))),
+    ] {
+        let (c, v) = post(
+            &f,
+            &ck,
+            "/api/admin/probes",
+            json!({"name": "x", "kind": kind, "target": target}),
+        )
+        .await;
+        assert_eq!(c, 400, "{kind}");
+        assert_eq!(v["error"], "目标地址过长", "{kind}");
+    }
+    let (c, _) = post(
+        &f,
+        &ck,
+        "/api/admin/probes",
+        json!({"name": "x", "kind": "http", "target": format!("http://example.com/{}", "a".repeat(2000))}),
+    )
+    .await;
+    assert_eq!(c, 201);
+    let (_, t) = post(
+        &f,
+        &ck,
+        "/api/admin/probes",
+        json!({"name": "p", "kind": "icmp", "target": "1.1.1.1"}),
+    )
+    .await;
+    let path = format!("/api/admin/probes/{}", t["id"]);
+    for body in [r#"{"sort": -1}"#, r#"{"sort": 9223372036854775807}"#] {
+        let (c, _, _) = http(f.port, "PATCH", &path, Some(&ck), Some(body)).await;
+        assert_eq!(c, 400, "{body}");
+    }
+    let (c, _, _) = http(
+        f.port,
+        "PATCH",
+        &path,
+        Some(&ck),
+        Some(r#"{"sort": 1000000}"#),
+    )
+    .await;
+    assert_eq!(c, 200);
+}
+
+#[tokio::test]
+async fn delete_task_succeeds_and_refreshes_cache_when_purge_fails() {
+    let f = start(|_| {}).await;
+    let ck = login(f.port).await;
+    let n1 = add_node(&f, &ck, "n1").await;
+    let (_, a) = post(
+        &f,
+        &ck,
+        "/api/admin/probes",
+        json!({"name": "a", "kind": "icmp", "target": "1.1.1.1"}),
+    )
+    .await;
+    let a = a["id"].as_i64().unwrap();
+    exec(
+        &f,
+        &format!(
+            "INSERT INTO probe_raw(task_id,node_id,ts_ms,sent,lost) VALUES({a},{n1},1,5,0); DROP TABLE probe_5m;"
+        ),
+    );
+    let (c, _, b) = http(
+        f.port,
+        "DELETE",
+        &format!("/api/admin/probes/{a}"),
+        Some(&ck),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(c, 204, "{b}");
+    assert!(get_list(&f, &ck).await.is_empty());
+    assert!(f.state.probe_tasks().is_empty());
+    assert_eq!(
+        count(
+            &f,
+            &format!("SELECT COUNT(*) FROM probe_tasks WHERE id={a}")
+        ),
+        0
+    );
+}

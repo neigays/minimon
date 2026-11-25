@@ -30,6 +30,8 @@ pub enum DbError {
     Hash(String),
     #[error("管理员账号尚未创建")]
     NoAdmin,
+    #[error("{0}")]
+    Other(String),
     #[error("database lock poisoned")]
     Poisoned,
 }
