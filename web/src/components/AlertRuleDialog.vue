@@ -1,32 +1,29 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { api, ApiError } from '../api'
-import { METRICS, toDisplay, toStored, type AlertRule, type Metric, type Op } from '../alert'
+import { METRICS, blankRuleForm, ruleBody, ruleFormFrom, rulePatch, type AlertRule, type RuleForm } from '../alert'
 
-defineProps<{ nodes: { id: number; name: string }[]; tasks: { id: number; name: string }[] }>()
+const props = defineProps<{ nodes: { id: number; name: string }[]; tasks: { id: number; name: string }[] }>()
 const emit = defineEmits<{ saved: [] }>()
 
 const dlg = ref<HTMLDialogElement | null>(null)
 const editing = ref<AlertRule | null>(null)
-const blank = () => ({ name: '', metric: 'cpu' as Metric, op: 'gt' as Op, threshold: '90', duration: '300', cooldown: '1800', all: true, ids: [] as number[], task: '' })
-const form = ref(blank())
+const form = ref<RuleForm>(blankRuleForm())
+let seed: RuleForm | null = null
 const err = ref('')
 const busy = ref(false)
 let opener: HTMLElement | null = null
 
 const meta = computed(() => METRICS.find((m) => m.value === form.value.metric))
 const unitLabel = computed(() => meta.value?.unit || '数值')
+/** 绑定的任务已被删除：保留原值并显示占位选项，避免下拉框空白。 */
+const staleTask = computed(() => form.value.task !== '' && !props.tasks.some((t) => String(t.id) === form.value.task))
 
 function open(r: AlertRule | null) {
   opener = document.activeElement as HTMLElement | null
   editing.value = r
-  form.value = r
-    ? {
-        name: r.name, metric: r.metric, op: r.op, threshold: String(Number(toDisplay(r.metric, r.threshold).toFixed(2))),
-        duration: String(r.duration_secs), cooldown: String(r.cooldown_secs), all: r.all_nodes, ids: [...r.node_ids],
-        task: r.probe_task_id == null ? '' : String(r.probe_task_id),
-      }
-    : blank()
+  seed = r ? ruleFormFrom(r) : null
+  form.value = r ? ruleFormFrom(r) : blankRuleForm()
   err.value = ''
   dlg.value?.showModal()
 }
@@ -51,16 +48,13 @@ async function submit() {
   if (!Number.isInteger(cd) || cd < 0) return void (err.value = '冷却时长需为不小于 0 的整数（秒）')
   if (!f.all && f.ids.length === 0) return void (err.value = '请至少选择一个节点，或选择「全部节点」')
   err.value = ''
-  const body = {
-    name, metric: f.metric, op: f.op, threshold: toStored(f.metric, th),
-    duration_secs: dur, cooldown_secs: cd, all_nodes: f.all, node_ids: f.all ? [] : f.ids,
-    probe_task_id: meta.value?.probe && f.task ? Number(f.task) : null,
-  }
   if (busy.value) return
   busy.value = true
   try {
-    if (editing.value) await api('PATCH', `/api/admin/alert-rules/${editing.value.id}`, body)
-    else await api('POST', '/api/admin/alert-rules', { ...body, enabled: true })
+    if (editing.value && seed) {
+      const patch = rulePatch(seed, f)
+      if (Object.keys(patch).length > 0) await api('PATCH', `/api/admin/alert-rules/${editing.value.id}`, patch)
+    } else await api('POST', '/api/admin/alert-rules', { ...ruleBody(f), enabled: true })
     close()
     emit('saved')
   } catch (e) {
@@ -87,7 +81,7 @@ async function submit() {
       </div>
       <div v-if="meta?.probe" class="field">
         <label for="ar-task">探测任务</label>
-        <select id="ar-task" v-model="form.task"><option value="">全部任务</option><option v-for="t in tasks" :key="t.id" :value="String(t.id)">{{ t.name }}</option></select>
+        <select id="ar-task" v-model="form.task"><option value="">全部任务</option><option v-if="staleTask" :value="form.task" disabled>（已删除的任务）</option><option v-for="t in tasks" :key="t.id" :value="String(t.id)">{{ t.name }}</option></select>
       </div>
       <div class="chk"><label><input v-model="form.all" type="checkbox" /> 适用全部节点</label></div>
       <fieldset v-if="!form.all" class="nodes">

@@ -22,7 +22,7 @@ export interface AlertSettings {
   traffic_enabled: boolean
   expire_enabled: boolean
   sendkey_set: boolean
-  sendkey_tail: string
+  sendkey_tail: string | null
 }
 
 export type EventKind = 'firing' | 'resolved' | 'traffic' | 'expire' | 'test'
@@ -44,7 +44,7 @@ export interface ActiveAlert {
   rule_id: number
   rule_name: string | null
   node_id: number
-  node_name: string
+  node_name: string | null
   task_id: number | null
   task_name: string | null
   since_ms: number
@@ -113,3 +113,65 @@ export function formatEventTime(ms: number, timeZone: string | null): string {
 }
 
 export const SENT_LABELS: Record<SentState, string> = { ok: '已发送', failed: '失败', skipped: '未配置', pending: '发送中' }
+
+/** 规则对话框的表单状态（数值字段保留用户输入的原始字符串）。 */
+export interface RuleForm {
+  name: string
+  metric: Metric
+  op: Op
+  threshold: string
+  duration: string
+  cooldown: string
+  all: boolean
+  ids: number[]
+  task: string
+}
+
+export const blankRuleForm = (): RuleForm => ({ name: '', metric: 'cpu', op: 'gt', threshold: '90', duration: '300', cooldown: '1800', all: true, ids: [], task: '' })
+
+export function ruleFormFrom(r: AlertRule): RuleForm {
+  return {
+    name: r.name, metric: r.metric, op: r.op, threshold: String(Number(toDisplay(r.metric, r.threshold).toFixed(2))),
+    duration: String(r.duration_secs), cooldown: String(r.cooldown_secs), all: r.all_nodes, ids: [...r.node_ids],
+    task: r.probe_task_id == null ? '' : String(r.probe_task_id),
+  }
+}
+
+const isProbe = (m: Metric) => METRICS.find((x) => x.value === m)?.probe ?? false
+const boundTask = (f: RuleForm): number | null => (isProbe(f.metric) && f.task ? Number(f.task) : null)
+const sameIds = (a: number[], b: number[]) => {
+  const x = [...a].sort((p, q) => p - q)
+  const y = [...b].sort((p, q) => p - q)
+  return x.length === y.length && x.every((v, i) => v === y[i])
+}
+
+/** 新建规则的完整请求体。调用方先校验输入合法。 */
+export function ruleBody(f: RuleForm): Record<string, unknown> {
+  return {
+    name: f.name.trim(), metric: f.metric, op: f.op, threshold: toStored(f.metric, Number(f.threshold)),
+    duration_secs: Number(f.duration), cooldown_secs: Number(f.cooldown), all_nodes: f.all, node_ids: f.all ? [] : f.ids,
+    probe_task_id: boundTask(f),
+  }
+}
+
+/**
+ * 编辑规则时只发送相对 seed 有变化的字段。
+ * 阈值按输入框原文比较：未改动时不回写，避免显示取整（如 0.125 → 0.13 Mbps）改变已存值；
+ * 绑定的任务未改动时也不发送，已删除任务的规则仍可编辑其它字段。
+ */
+export function rulePatch(seed: RuleForm, f: RuleForm): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const name = f.name.trim()
+  if (name !== seed.name) out.name = name
+  if (f.metric !== seed.metric) out.metric = f.metric
+  if (f.op !== seed.op) out.op = f.op
+  // 指标变化时单位可能不同，阈值需按新指标重新换算。
+  if (f.threshold.trim() !== seed.threshold.trim() || f.metric !== seed.metric) out.threshold = toStored(f.metric, Number(f.threshold))
+  if (Number(f.duration) !== Number(seed.duration)) out.duration_secs = Number(f.duration)
+  if (Number(f.cooldown) !== Number(seed.cooldown)) out.cooldown_secs = Number(f.cooldown)
+  if (f.all !== seed.all) out.all_nodes = f.all
+  if (!f.all && (f.all !== seed.all || !sameIds(f.ids, seed.ids))) out.node_ids = f.ids
+  const task = boundTask(f)
+  if (task !== boundTask(seed)) out.probe_task_id = task
+  return out
+}

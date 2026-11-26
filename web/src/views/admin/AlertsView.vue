@@ -157,11 +157,11 @@ async function sendTest() {
       <p v-if="loaded && active.length === 0" class="ok-line">一切正常</p>
       <ul v-else class="active">
         <li v-for="(a, i) in active" :key="i">
-          <span class="dot" :class="a.fired_ms == null ? 'pending' : 'firing'" aria-hidden="true"></span>
+          <span class="dot" aria-hidden="true"></span>
           <strong>{{ a.rule_name ?? '离线' }}</strong>
-          <span>{{ a.node_name }}<template v-if="a.task_name">（{{ a.task_name }}）</template></span>
+          <span>{{ a.node_name ?? `节点 #${a.node_id}` }}<template v-if="a.task_name">（{{ a.task_name }}）</template></span>
           <span v-if="a.value_text" class="num">{{ a.value_text }}</span>
-          <span class="muted small">{{ a.fired_ms == null ? '观察中' : '已触发' }} · 始于 {{ since(a) }}</span>
+          <span class="muted small">已触发 · 始于 {{ since(a) }}</span>
         </li>
       </ul>
     </div>
@@ -209,7 +209,7 @@ async function sendTest() {
       <form class="key" novalidate @submit.prevent="saveKey(false)">
         <div class="field">
           <label for="sk">Server酱³ SendKey</label>
-          <input id="sk" v-model="key" type="password" :placeholder="settings?.sendkey_set ? `••••${settings.sendkey_tail}` : '如 sctp123t…'" autocomplete="off" spellcheck="false" />
+          <input id="sk" v-model="key" type="password" :placeholder="settings?.sendkey_set ? `••••${settings.sendkey_tail ?? ''}` : '如 sctp123t…'" autocomplete="off" spellcheck="false" />
         </div>
         <button class="btn" type="submit" :disabled="busy">保存</button>
         <button class="btn ghost" type="button" :disabled="busy || !settings?.sendkey_set" @click="saveKey(true)">清除</button>
@@ -244,7 +244,6 @@ h3 { font-size: 14px; margin: 22px 0 8px; }
 .active { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .active li { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); align-self: center; }
-.dot.pending { background: var(--muted); }
 .b-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .b-name { font-weight: 550; min-width: 64px; }
 .grace { display: flex; gap: 8px; align-items: center; margin-left: auto; font-size: 13px; color: var(--fg-2); }
