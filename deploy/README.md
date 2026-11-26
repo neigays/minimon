@@ -46,15 +46,17 @@ sudo systemctl enable --now minimon-server
 server 会在 `/install.sh` 公开提供安装脚本（登录要求不影响该地址）。在被监控机器上执行：
 
 ```bash
-curl -fsSL https://<面板地址>/install.sh | sh -s -- --server https://<面板地址> --token <token>
+curl -fsSL https://<面板地址>/install.sh | sudo bash -s -- --server wss://<面板地址> --token <token>
 ```
+
+安装脚本需要 root（所以用 `sudo`），`--server` 只接受 `ws://` 或 `wss://`：面板是明文 HTTP 时用 `ws://<面板地址>`，HTTPS 时用 `wss://`。
 
 token 用 `minimon-server node add <name>` 或后台“节点管理”获得。
 
 - 升级：重新执行同一条命令即可。
-- 卸载：`curl -fsSL https://<面板地址>/install.sh | sh -s -- --uninstall`
+- 卸载：`curl -fsSL https://<面板地址>/install.sh | sudo bash -s -- --uninstall`
 - 指定版本：`--version v0.1.0`
-- 镜像：`--mirror <基址>` 可从镜像或代理下载发布产物（国内网络用）。注意：校验文件 `SHA256SUMS` 同样经镜像下载，因此镜像必须是可信的。
+- 镜像：`--mirror <前缀>`（如 `https://ghproxy.example/`）会加在下载地址前，从镜像或代理下载发布产物（国内网络用）。注意：校验文件 `SHA256SUMS` 同样经镜像下载，因此镜像必须是可信的。
 
 ## 首次发版
 
