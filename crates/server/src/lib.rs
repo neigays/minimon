@@ -60,6 +60,8 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(&cfg.data_dir)
         .with_context(|| format!("创建数据目录 {} 失败", cfg.data_dir.display()))?;
+    let abs = std::fs::canonicalize(&cfg.data_dir).unwrap_or_else(|_| cfg.data_dir.clone());
+    tracing::info!(data_dir = %abs.display(), "数据目录");
     let db = Arc::new(db::Db::open(&cfg.db_path()).context("打开数据库失败")?);
     let listener = tokio::net::TcpListener::bind(cfg.listen)
         .await

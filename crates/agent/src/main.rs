@@ -9,10 +9,8 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    rt.block_on(minimon_agent::run(cfg, async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::warn!("监听 Ctrl-C 失败: {e}");
-            std::future::pending::<()>().await;
-        }
-    }))
+    rt.block_on(minimon_agent::run(
+        cfg,
+        minimon_agent::signal::shutdown_signal(),
+    ))
 }

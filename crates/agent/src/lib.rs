@@ -5,6 +5,7 @@ pub mod client;
 pub mod collect;
 pub mod config;
 pub mod probe;
+pub mod signal;
 
 pub use client::run;
 pub use config::AgentConfig;
