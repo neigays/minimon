@@ -22,3 +22,9 @@ test('install command', () => {
     'curl -fsSL https://m.example.com/install.sh | sudo bash -s -- --server wss://m.example.com --token tok',
   )
 })
+test('install command with mirror', () => {
+  expect(installCommand('https://p', 'wss://p', 't', 'https://gh.example/')).toBe(
+    'curl -fsSL https://p/install.sh | sudo bash -s -- --server wss://p --token t --mirror https://gh.example/',
+  )
+  expect(installCommand('https://p', 'wss://p', 't', '  ')).toBe(installCommand('https://p', 'wss://p', 't'))
+})

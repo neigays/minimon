@@ -11,6 +11,7 @@ import { statusOf } from '../status'
 import { buildProbeCharts, fetchProbeHistory, type ProbeHistory } from '../probe'
 import { api } from '../api'
 import TagList from '../components/TagList.vue'
+import { flagEmoji } from '../flag'
 import { expireLevel, expireText, formatDecBytes, formatPeriodDay, MODE_LABELS } from '../traffic'
 
 type Info = PublicNode & { hostname?: string | null; kernel?: string | null; agent_version?: string | null; ip?: string | null; note?: string }
@@ -166,7 +167,7 @@ const adminExtra = computed<[string, string, string][]>(() => {
     </div>
     <template v-else>
       <div v-if="node" class="d-head">
-        <span v-if="node.region" class="region">{{ node.region }}</span>
+        <span v-if="node.region" class="flag" :title="node.region" role="img" :aria-label="`地区 ${node.region}`">{{ flagEmoji(node.region) || node.region }}</span>
         <h1>{{ node.name }}</h1>
         <StatusPill :status="status" />
         <span v-if="node.group" class="gran">{{ node.group }}</span>
@@ -208,6 +209,7 @@ const adminExtra = computed<[string, string, string][]>(() => {
 .back:hover { color: var(--fg); }
 .d-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
 .d-head h1 { font-size: 22px; margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+.flag { font-size: 20px; line-height: 1; }
 .region { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; }
 .info { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); background: var(--surface); border-top: 1px solid var(--line); border-left: 1px solid var(--line); border-radius: var(--r); overflow: hidden; margin: 0 0 18px; box-shadow: 0 0 0 1px var(--line); }
 .info > div { padding: 10px 14px; min-width: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }

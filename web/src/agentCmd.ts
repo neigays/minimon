@@ -20,6 +20,7 @@ export function httpBase(publicUrl: string | null, location: { protocol: string;
 }
 
 /** 一键安装命令：从面板下载 install.sh 并以 root 执行。 */
-export function installCommand(httpBase: string, wsBase: string, token: string): string {
-  return `curl -fsSL ${httpBase}/install.sh | sudo bash -s -- --server ${wsBase} --token ${token}`
+export function installCommand(httpBase: string, wsBase: string, token: string, mirror?: string): string {
+  const m = mirror?.trim()
+  return `curl -fsSL ${httpBase}/install.sh | sudo bash -s -- --server ${wsBase} --token ${token}${m ? ` --mirror ${m}` : ''}`
 }

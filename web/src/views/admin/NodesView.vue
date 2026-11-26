@@ -7,11 +7,12 @@ import StatusPill from '../../components/StatusPill.vue'
 import { useLive, type PublicNode } from '../../live'
 import { statusOf } from '../../status'
 import { MODE_LABELS, type TrafficMode } from '../../traffic'
-import { blankForm, diffPatch, formFromNode } from '../../nodeForm'
+import { billingPatch, blankForm, formFromNode, infoPatch } from '../../nodeForm'
+import { flagEmoji } from '../../flag'
 import TagList from '../../components/TagList.vue'
 import { previewTags } from '../../tags'
 
-type AdminNode = PublicNode & { hidden: boolean; ip: string | null; note: string; traffic_quota: number | null; traffic_reset_day: number; traffic_mode: TrafficMode; alert_offline: boolean; tags_raw: string }
+type AdminNode = PublicNode & { hidden: boolean; ip: string | null; note: string; traffic_quota: number | null; traffic_reset_day: number; traffic_mode: TrafficMode; alert_offline: boolean; tags_raw: string; ipv4: string | null; ipv6: string | null }
 
 const { nodes: liveNodes, connected } = useLive()
 const list = ref<AdminNode[]>([])
@@ -79,27 +80,61 @@ function remove(n: AdminNode) {
   void run(() => api('DELETE', `/api/admin/nodes/${n.id}`))
 }
 
-// ---------- 新增 / 重置 token 抽屉 ----------
-const drawer = ref<{ title: string; command: string; manual: string } | null>(null)
-const drawerEl = ref<HTMLElement | null>(null)
-const copyMsg = ref('')
+function toggleAlert(n: AdminNode) {
+  void run(() => api('PATCH', `/api/admin/nodes/${n.id}`, { alert_offline: !n.alert_offline }))
+}
 
-async function showDrawer(title: string, token: string) {
-  const ws = wsBase(publicUrl, location)
-  drawer.value = {
-    title,
-    command: installCommand(httpBase(publicUrl, location), ws, token),
-    manual: agentCommand(ws, token),
+// ---------- 安装命令面板（随时可打开；token 单独请求，不进节点列表） ----------
+const MIRROR_KEY = 'minimon-mirror'
+function loadMirror(): string {
+  try {
+    return localStorage.getItem(MIRROR_KEY) ?? ''
+  } catch {
+    return ''
   }
+}
+const inst = ref<{ node: AdminNode; title: string; token: string | null; loading: boolean; err: string } | null>(null)
+const instEl = ref<HTMLElement | null>(null)
+const useMirror = ref(loadMirror() !== '')
+const mirror = ref(loadMirror())
+const copyMsg = ref('')
+const instCmd = computed(() => {
+  const i = inst.value
+  if (!i?.token) return null
+  const ws = wsBase(publicUrl, location)
+  return {
+    command: installCommand(httpBase(publicUrl, location), ws, i.token, useMirror.value ? mirror.value : ''),
+    manual: agentCommand(ws, i.token),
+  }
+})
+function saveMirror() {
+  try {
+    if (useMirror.value && mirror.value.trim()) localStorage.setItem(MIRROR_KEY, mirror.value.trim())
+    else localStorage.removeItem(MIRROR_KEY)
+  } catch {
+    // 仅为便利，失败无妨
+  }
+}
+async function openInstall(n: AdminNode, title: string, token?: string) {
   copyMsg.value = ''
+  inst.value = { node: n, title, token: token ?? null, loading: token === undefined, err: '' }
   await nextTick()
-  drawerEl.value?.focus()
+  instEl.value?.focus()
+  if (token !== undefined) return
+  try {
+    const r = await api<{ token: string | null }>('GET', `/api/admin/nodes/${n.id}/token`)
+    if (inst.value?.node.id === n.id) Object.assign(inst.value, { token: r.token, loading: false })
+  } catch (e) {
+    if (inst.value?.node.id === n.id) Object.assign(inst.value, { loading: false, err: e instanceof ApiError ? e.message : '读取失败，请重试' })
+  }
 }
 function copy() {
-  if (!drawer.value) return
+  const c = instCmd.value?.command
+  if (!c) return
+  saveMirror()
   // 必须在点击处理函数内同步调用，保持用户手势。
   try {
-    navigator.clipboard.writeText(drawer.value.command).then(
+    navigator.clipboard.writeText(c).then(
       () => (copyMsg.value = '已复制'),
       () => (copyMsg.value = '复制失败，请手动选择'),
     )
@@ -110,21 +145,28 @@ function copy() {
 function resetToken(n: AdminNode) {
   void run(async () => {
     const r = await api<{ token: string }>('POST', `/api/admin/nodes/${n.id}/token`)
-    await showDrawer(`已重置节点「${n.name}」的 token`, r.token)
+    await openInstall(n, `已重置节点「${n.name}」的 token（旧 token 已失效）`, r.token)
   })
 }
 
-// ---------- 新增 / 编辑弹层（原生 dialog：自带焦点陷阱、Esc 关闭、关闭后还原焦点） ----------
+// ---------- 弹层：新增（只填名称）/ 编辑信息 / 账单（原生 dialog：焦点陷阱、Esc 关闭、关闭后还原焦点） ----------
+type Mode = 'create' | 'info' | 'billing'
 const dlg = ref<HTMLDialogElement | null>(null)
-const editing = ref<AdminNode | null>(null) // null 表示新增
+const mode = ref<Mode>('create')
+const editing = ref<AdminNode | null>(null)
 let seed = blankForm()
 const form = ref(blankForm())
 const tagPreview = computed(() => previewTags(form.value.tags))
 const formErr = ref('')
+const dlgTitle = computed(() => {
+  const n = editing.value?.name ?? ''
+  return mode.value === 'create' ? '新增节点' : mode.value === 'info' ? `编辑信息「${n}」` : `账单「${n}」`
+})
 
 let opener: HTMLElement | null = null
-function openForm(n: AdminNode | null) {
+function openForm(m: Mode, n: AdminNode | null) {
   opener = document.activeElement as HTMLElement | null
+  mode.value = m
   editing.value = n
   seed = n ? formFromNode(n) : blankForm()
   form.value = { ...seed }
@@ -135,44 +177,39 @@ function closeForm() {
   dlg.value?.close()
 }
 function onDialogClose() {
-  // 新增成功后焦点交给接入面板，其余情况还给触发按钮。
-  if (!drawer.value || editing.value) opener?.focus()
-}
-function onRegion(e: Event) {
-  const el = e.target as HTMLInputElement
-  el.value = el.value.replace(/[^a-zA-Z]/g, '').toUpperCase().slice(0, 2)
-  form.value.region = el.value
+  // 新增成功后焦点交给安装命令面板，其余情况还给触发按钮。
+  if (mode.value !== 'create' || !inst.value) opener?.focus()
 }
 async function submitForm() {
   const f = form.value
-  const name = f.name.trim()
-  if (!name) return void (formErr.value = '请输入名称')
-  if (f.region && f.region.length !== 2) return void (formErr.value = '地区需为空或 2 位字母代码')
-  formErr.value = ''
-  const body: Record<string, unknown> = { name, group: f.group.trim(), region: f.region, note: f.note }
-  if (editing.value) {
+  let body: Record<string, unknown>
+  if (mode.value === 'billing') {
     const q = f.quota.trim()
     const qv = Number(q)
     if (q && (!Number.isFinite(qv) || qv <= 0)) return void (formErr.value = '月额度需为大于 0 的数字，留空表示不限')
     const day = Number(f.resetDay)
     if (!Number.isInteger(day) || day < 1 || day > 31) return void (formErr.value = '重置日需为 1 到 31 的整数')
-    // 只提交相对打开时有变化的字段，避免误改未动过的计费配置。
-    for (const k of Object.keys(body)) delete body[k]
-    Object.assign(body, diffPatch(seed, f))
-    if (Object.keys(body).length === 0) return void closeForm()
+    body = billingPatch(seed, f)
+  } else {
+    const name = f.name.trim()
+    if (!name) return void (formErr.value = '请输入名称')
+    body = mode.value === 'create' ? { name } : infoPatch(seed, f)
   }
+  formErr.value = ''
+  if (mode.value !== 'create' && Object.keys(body).length === 0) return void closeForm()
   if (busy.value) return
   busy.value = true
   try {
-    if (editing.value) {
-      await api('PATCH', `/api/admin/nodes/${editing.value.id}`, body)
-      closeForm()
-    } else {
+    if (mode.value === 'create') {
       const r = await api<{ node: AdminNode; token: string }>('POST', '/api/admin/nodes', body)
       closeForm()
-      await showDrawer(`已创建节点「${r.node.name}」`, r.token)
+      await reload()
+      await openInstall(r.node, `已创建节点「${r.node.name}」`, r.token)
+    } else {
+      await api('PATCH', `/api/admin/nodes/${editing.value?.id}`, body)
+      closeForm()
+      await reload()
     }
-    await reload()
   } catch (e) {
     formErr.value = e instanceof ApiError ? e.message : '保存失败，请重试'
   } finally {
@@ -187,23 +224,31 @@ async function submitForm() {
       <h2>节点管理</h2>
       <span class="muted">共 {{ list.length }} 个</span>
       <span class="spacer"></span>
-      <button class="btn" type="button" @click="openForm(null)">新增节点</button>
+      <button class="btn" type="button" @click="openForm('create', null)">新增节点</button>
     </div>
     <div v-if="pageErr" class="err page-err" role="alert">{{ pageErr }}</div>
 
-    <div v-if="drawer" ref="drawerEl" class="drawer" tabindex="-1" role="region" aria-label="新节点接入">
-      <h3>{{ drawer.title }}</h3>
-      <div class="hint">
+    <div v-if="inst" ref="instEl" class="drawer" tabindex="-1" role="region" aria-label="安装命令">
+      <h3>{{ inst.title || `安装命令「${inst.node.name}」` }}</h3>
+      <p v-if="inst.loading" class="sub">读取中…</p>
+      <div v-else-if="inst.err" class="err" role="alert">{{ inst.err }}</div>
+      <template v-else-if="instCmd">
+        <pre class="code" tabindex="0" aria-label="一键安装命令">{{ instCmd.command }}</pre>
+        <div class="row">
+          <label class="chk-inline"><input v-model="useMirror" type="checkbox" /> 使用国内镜像</label>
+          <input v-if="useMirror" v-model="mirror" class="mirror" placeholder="代理前缀，如 https://ghproxy.example/" autocomplete="off" spellcheck="false" aria-label="镜像代理前缀" />
+        </div>
+        <p class="sub">在要监控的机器上执行；升级 agent 时重新执行同一条命令即可。已手动安装二进制时：</p>
+        <pre class="code" tabindex="0" aria-label="agent 启动命令">{{ instCmd.manual }}</pre>
+      </template>
+      <div v-else class="hint">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
-        <span>token 只显示这一次，关闭后无法再查看，只能重置。</span>
+        <span>此节点创建于旧版本，只保存了 token 的哈希。重置 token 后即可随时查看安装命令（在线的 agent 需用新命令重新安装）。</span>
       </div>
-      <pre class="code" tabindex="0" aria-label="一键安装命令">{{ drawer.command }}</pre>
-      <p class="sub">国内 VPS 下载慢可在末尾加 <code>--mirror &lt;代理前缀&gt;</code>，如 <code>https://ghproxy.example/</code></p>
-      <p class="sub">已手动安装二进制：</p>
-      <pre class="code" tabindex="0" aria-label="agent 启动命令">{{ drawer.manual }}</pre>
       <div class="row">
-        <button class="btn" type="button" @click="copy">复制命令</button>
-        <button class="btn ghost" type="button" @click="drawer = null">我已保存，关闭</button>
+        <button v-if="instCmd" class="btn" type="button" @click="copy">复制命令</button>
+        <ConfirmButton v-if="!inst.loading && !inst.err && !instCmd" label="重置 token" confirm-label="确认重置？" :disabled="busy" @confirm="resetToken(inst.node)" />
+        <button class="btn ghost" type="button" @click="inst = null">关闭</button>
         <span class="muted" role="status">{{ copyMsg }}</span>
       </div>
     </div>
@@ -219,16 +264,27 @@ async function submitForm() {
             </td>
             <td class="name">{{ n.name }}</td>
             <td>{{ n.group || '—' }}</td>
-            <td>{{ n.region || '—' }}</td>
+            <td><template v-if="n.region"><span class="flag" aria-hidden="true">{{ flagEmoji(n.region) }}</span> {{ n.region }}</template><template v-else>—</template></td>
             <td><StatusPill :status="statusOf(n, connected)" /></td>
-            <td class="num">{{ n.ip || '—' }}</td>
+            <td class="num ip">
+              <div>{{ n.ipv4 || n.ip || '—' }}</div>
+              <div v-if="n.ipv6" class="v6">{{ n.ipv6 }}</div>
+            </td>
             <td>
               <button type="button" class="switch" role="switch" :aria-checked="!n.hidden" :aria-label="`在公开页显示 ${n.name}`" :disabled="busy" @click="toggleHidden(n)"></button>
             </td>
             <td class="ops">
-              <button type="button" class="act" @click="openForm(n)">编辑</button>
-              <ConfirmButton label="重置 token" confirm-label="确认重置？" :disabled="busy" @confirm="resetToken(n)" />
-              <ConfirmButton label="删除" confirm-label="确认删除？" danger :disabled="busy" @confirm="remove(n)" />
+              <button type="button" class="act" @click="openForm('info', n)">编辑信息</button>
+              <button type="button" class="act" @click="openForm('billing', n)">账单</button>
+              <button type="button" class="act" @click="openInstall(n, '')">安装命令</button>
+              <details class="more">
+                <summary class="act" :aria-label="`${n.name} 的更多操作`">更多</summary>
+                <div class="menu">
+                  <button type="button" class="act" :disabled="busy" @click="toggleAlert(n)">离线告警：{{ n.alert_offline ? '开' : '关' }}</button>
+                  <ConfirmButton label="重置 token" confirm-label="确认重置？" :disabled="busy" @confirm="resetToken(n)" />
+                  <ConfirmButton label="删除节点" confirm-label="确认删除？" danger :disabled="busy" @confirm="remove(n)" />
+                </div>
+              </details>
             </td>
           </tr>
           <tr v-if="loaded && rows.length === 0"><td colspan="8" class="empty">还没有节点，点击右上角「新增节点」</td></tr>
@@ -238,12 +294,13 @@ async function submitForm() {
 
     <dialog ref="dlg" class="dlg" aria-labelledby="dlg-title" @close="onDialogClose">
       <form novalidate @submit.prevent="submitForm">
-        <h3 id="dlg-title">{{ editing ? `编辑节点「${editing.name}」` : '新增节点' }}</h3>
-        <div class="field"><label for="f-name">名称</label><input id="f-name" v-model="form.name" maxlength="64" autofocus autocomplete="off" /></div>
-        <div class="field"><label for="f-group">分组</label><input id="f-group" v-model="form.group" maxlength="32" autocomplete="off" /></div>
-        <div class="field"><label for="f-region">地区（2 位字母代码，可留空）</label><input id="f-region" :value="form.region" maxlength="2" placeholder="如 HK" autocomplete="off" @input="onRegion" /></div>
-        <div class="field"><label for="f-note">备注（仅管理员可见）</label><input id="f-note" v-model="form.note" maxlength="500" autocomplete="off" /></div>
-        <template v-if="editing">
+        <h3 id="dlg-title">{{ dlgTitle }}</h3>
+        <template v-if="mode !== 'billing'">
+          <div class="field"><label for="f-name">名称</label><input id="f-name" v-model="form.name" maxlength="64" autofocus autocomplete="off" /></div>
+          <p v-if="mode === 'create'" class="sub">创建后显示安装命令；分组、标签、账单等可稍后在节点行上编辑。地区与 IP 由 agent 自动上报。</p>
+        </template>
+        <template v-if="mode === 'info'">
+          <div class="field"><label for="f-group">分组</label><input id="f-group" v-model="form.group" maxlength="32" autocomplete="off" /></div>
           <div class="field">
             <label for="f-tags">标签（多个标签用 ; 分隔，末尾加 &lt;颜色&gt; 指定颜色）</label>
             <input id="f-tags" v-model="form.tags" maxlength="400" placeholder="1Gbps<yellow>;CN2 GIA<red>" autocomplete="off" aria-describedby="f-tags-help" />
@@ -255,10 +312,13 @@ async function submitForm() {
               <span v-else class="muted">可用颜色：gray、red、orange、yellow、green、blue、purple、pink 等 Radix 色板名称，不写为 gray</span>
             </div>
           </div>
+          <div class="field"><label for="f-note">备注（仅管理员可见）</label><input id="f-note" v-model="form.note" maxlength="500" autocomplete="off" /></div>
+        </template>
+        <template v-if="mode === 'billing'">
           <div class="field">
             <label for="f-quota">月流量额度（留空表示不限，十进制：1 GB = 10⁹ 字节）</label>
             <div class="inline">
-              <input id="f-quota" v-model="form.quota" inputmode="decimal" placeholder="不限" autocomplete="off" />
+              <input id="f-quota" v-model="form.quota" inputmode="decimal" placeholder="不限" autocomplete="off" autofocus />
               <select v-model="form.unit" aria-label="额度单位"><option>GB</option><option>TB</option></select>
             </div>
           </div>
@@ -269,11 +329,10 @@ async function submitForm() {
             <div class="inline"><input id="f-exp" v-model="form.expire" type="date" /><button class="btn ghost" type="button" :disabled="!form.expire" @click="form.expire = ''">清空</button></div>
           </div>
         </template>
-        <div v-if="editing" class="chk"><label><input v-model="form.alertOffline" type="checkbox" /> 离线告警（节点断线时推送通知）</label></div>
         <div v-if="formErr" class="err" role="alert">{{ formErr }}</div>
         <div class="row end">
           <button class="btn ghost" type="button" @click="closeForm">取消</button>
-          <button class="btn" type="submit" :disabled="busy">{{ editing ? '保存' : '创建' }}</button>
+          <button class="btn" type="submit" :disabled="busy">{{ mode === 'create' ? '创建' : '保存' }}</button>
         </div>
       </form>
     </dialog>
@@ -281,6 +340,15 @@ async function submitForm() {
 </template>
 
 <style scoped>
+.flag { font-size: 14px; }
+td.ip .v6 { font-size: 11px; color: var(--muted); }
+.more { position: relative; display: inline-block; }
+.more summary { list-style: none; display: inline-block; }
+.more summary::-webkit-details-marker { display: none; }
+.more .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px; display: grid; gap: 2px; min-width: 140px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); }
+.more .menu .act { text-align: left; }
+.chk-inline { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+.mirror { flex: 1; min-width: 220px; }
 .tag-help { margin-top: 6px; font-size: 12px; min-height: 18px; }
 .err-hint { margin-top: 4px; color: var(--bad); }
 .panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }

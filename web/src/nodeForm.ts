@@ -3,7 +3,6 @@ import { bytesToQuotaInput, gbToBytes, type TrafficMode } from './traffic'
 export interface NodeForm {
   name: string
   group: string
-  region: string
   note: string
   quota: string
   unit: 'GB' | 'TB'
@@ -14,7 +13,7 @@ export interface NodeForm {
   tags: string
 }
 
-export const blankForm = (): NodeForm => ({ name: '', group: '', region: '', note: '', quota: '', unit: 'GB', resetDay: '1', mode: 'sum', expire: '', alertOffline: true, tags: '' })
+export const blankForm = (): NodeForm => ({ name: '', group: '', note: '', quota: '', unit: 'GB', resetDay: '1', mode: 'sum', expire: '', alertOffline: true, tags: '' })
 
 /** 管理员节点里已存的配置（不是用量缓存 traffic）。 */
 export interface NodeConfig {
@@ -32,7 +31,7 @@ export interface NodeConfig {
 
 export function formFromNode(n: NodeConfig): NodeForm {
   const f = blankForm()
-  Object.assign(f, { name: n.name, group: n.group, region: n.region, note: n.note })
+  Object.assign(f, { name: n.name, group: n.group, note: n.note })
   if (n.traffic_quota) {
     const q = bytesToQuotaInput(n.traffic_quota)
     f.quota = String(q.value)
@@ -52,21 +51,25 @@ export function quotaBytes(f: NodeForm): number | null {
   return q ? gbToBytes(Number(q), f.unit) : null
 }
 
-/** 只包含相对 seed 有变化的字段；清空额度/到期日明确发送 null。 */
-export function diffPatch(seed: NodeForm, form: NodeForm): Record<string, unknown> {
+/** 「编辑信息」：名称、分组、标签、备注中相对 seed 有变化的字段。 */
+export function infoPatch(seed: NodeForm, form: NodeForm): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   const name = form.name.trim()
   const group = form.group.trim()
   if (name !== seed.name) out.name = name
   if (group !== seed.group) out.group = group
-  if (form.region !== seed.region) out.region = form.region
   if (form.note !== seed.note) out.note = form.note
+  if (form.tags.trim() !== seed.tags.trim()) out.tags = form.tags.trim()
+  return out
+}
+
+/** 「账单」：额度、重置日、计费口径、到期日中有变化的字段；清空额度 / 到期日明确发送 null。 */
+export function billingPatch(seed: NodeForm, form: NodeForm): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
   const q = quotaBytes(form)
   if (q !== quotaBytes(seed)) out.traffic_quota = q
   if (Number(form.resetDay) !== Number(seed.resetDay)) out.traffic_reset_day = Number(form.resetDay)
   if (form.mode !== seed.mode) out.traffic_mode = form.mode
   if (form.expire !== seed.expire) out.expire_date = form.expire || null
-  if (form.alertOffline !== seed.alertOffline) out.alert_offline = form.alertOffline
-  if (form.tags.trim() !== seed.tags.trim()) out.tags = form.tags.trim()
   return out
 }

@@ -9,6 +9,7 @@ import Meter from './Meter.vue'
 import ProbeRow from './ProbeRow.vue'
 import StatusPill from './StatusPill.vue'
 import TagList from './TagList.vue'
+import { flagEmoji } from '../flag'
 
 const { user } = useAuth()
 const props = defineProps<{ node: PublicNode; connected: boolean; now: number }>()
@@ -34,7 +35,7 @@ const offlineText = computed(() => {
 <template>
   <RouterLink class="card" :class="{ 'is-off': off }" :to="`/node/${node.id}`">
     <div class="card-head">
-      <span v-if="node.region" class="region">{{ node.region }}</span>
+      <span v-if="node.region" class="flag" :title="node.region" role="img" :aria-label="`地区 ${node.region}`">{{ flagEmoji(node.region) || node.region }}</span>
       <span class="name">{{ node.name }}</span>
       <StatusPill class="pill" :status="status" />
     </div>
@@ -78,6 +79,7 @@ const offlineText = computed(() => {
 .card:hover { border-color: var(--line-strong); }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-tags { margin-top: -2px; }
+.flag { font-size: 16px; line-height: 1; flex: none; }
 .region { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line-strong); color: var(--fg-2); flex: none; }
 .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pill { margin-left: auto; }
