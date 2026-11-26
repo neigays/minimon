@@ -19,3 +19,10 @@ async function boot() {
   createApp(App).use(router).mount('#app')
 }
 void boot()
+
+// PWA：注册最小 service worker（不缓存），让浏览器允许「安装为 App」。仅生产构建。
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => undefined)
+  })
+}
