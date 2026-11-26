@@ -429,3 +429,91 @@ async fn test_send_without_sendkey_is_400() {
     assert_eq!(b.trim(), "[]");
     f.stop().await;
 }
+
+#[tokio::test]
+async fn patch_ignores_stale_references() {
+    let out = std::sync::Arc::new(std::sync::Mutex::new(0));
+    let o2 = out.clone();
+    let f = start_at(
+        tempfile::tempdir().unwrap(),
+        move |db: &Db| *o2.lock().unwrap() = db.add_node("n1").unwrap().0.id,
+        |_| {},
+    )
+    .await;
+    let nid = *out.lock().unwrap();
+    let (p, c) = (f.port, login(f.port).await);
+    // (a) 绑定的探测任务被删除
+    let (code, _, b) = http(
+        p,
+        "POST",
+        "/api/admin/probes",
+        Some(&c),
+        Some(r#"{"name":"t","kind":"tcp","target":"1.1.1.1:80"}"#),
+    )
+    .await;
+    assert_eq!(code, 201, "{b}");
+    let tid = json(&b)["id"].as_i64().unwrap();
+    let rule = format!(
+        r#"{{"name":"r","enabled":true,"metric":"probe_loss","op":"gt","threshold":50,"all_nodes":true,"probe_task_id":{tid}}}"#
+    );
+    let (code, _, b) = http(p, "POST", "/api/admin/alert-rules", Some(&c), Some(&rule)).await;
+    assert_eq!(code, 201, "{b}");
+    let rid = json(&b)["id"].as_i64().unwrap();
+    let (code, _, b) = http(
+        p,
+        "DELETE",
+        &format!("/api/admin/probes/{tid}"),
+        Some(&c),
+        Some("{}"),
+    )
+    .await;
+    assert!(code == 204 || code == 200, "{code} {b}");
+    let (code, _, b) = http(
+        p,
+        "PATCH",
+        &format!("/api/admin/alert-rules/{rid}"),
+        Some(&c),
+        Some(r#"{"enabled":false}"#),
+    )
+    .await;
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(json(&b)["probe_task_id"], tid);
+    assert_eq!(json(&b)["enabled"], false);
+    // 显式给出不存在的任务仍然 400
+    let (code, _, _) = http(
+        p,
+        "PATCH",
+        &format!("/api/admin/alert-rules/{rid}"),
+        Some(&c),
+        Some(&format!(r#"{{"probe_task_id":{tid}}}"#)),
+    )
+    .await;
+    assert_eq!(code, 400);
+    // (b) 关联节点被删除
+    let rule = format!(
+        r#"{{"name":"r2","enabled":true,"metric":"cpu","op":"gt","threshold":50,"all_nodes":false,"node_ids":[{nid}]}}"#
+    );
+    let (code, _, b) = http(p, "POST", "/api/admin/alert-rules", Some(&c), Some(&rule)).await;
+    assert_eq!(code, 201, "{b}");
+    let rid = json(&b)["id"].as_i64().unwrap();
+    let (code, _, b) = http(
+        p,
+        "DELETE",
+        &format!("/api/admin/nodes/{nid}"),
+        Some(&c),
+        Some("{}"),
+    )
+    .await;
+    assert!(code == 204 || code == 200, "{code} {b}");
+    let (code, _, b) = http(
+        p,
+        "PATCH",
+        &format!("/api/admin/alert-rules/{rid}"),
+        Some(&c),
+        Some(r#"{"name":"x"}"#),
+    )
+    .await;
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(json(&b)["name"], "x");
+    f.stop().await;
+}

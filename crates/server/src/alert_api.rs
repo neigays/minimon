@@ -66,7 +66,14 @@ fn is_percent(m: Metric) -> bool {
 }
 
 /// 校验完整规则；返回规范化后的名称、节点列表。
-fn validate_rule(state: &AppState, r: &NewAlertRule) -> Result<(String, Vec<i64>), ApiError> {
+/// `check_task` / `check_nodes` 为 false 时跳过对应引用的存在性与非空检查
+/// （PATCH 未触及的陈旧引用不应阻止其他字段的修改）。
+fn validate_rule(
+    state: &AppState,
+    r: &NewAlertRule,
+    check_task: bool,
+    check_nodes: bool,
+) -> Result<(String, Vec<i64>), ApiError> {
     let name = r.name.trim().to_string();
     if !(1..=64).contains(&name.chars().count()) {
         return Err(ApiError::bad_request("名称需为 1 到 64 个字符"));
@@ -87,7 +94,7 @@ fn validate_rule(state: &AppState, r: &NewAlertRule) -> Result<(String, Vec<i64>
         if !r.metric.is_probe() {
             return Err(ApiError::bad_request("只有探测类指标可以绑定任务"));
         }
-        if !state.probe_tasks().iter().any(|t| t.id == tid) {
+        if check_task && !state.probe_tasks().iter().any(|t| t.id == tid) {
             return Err(ApiError::bad_request("所选探测任务不存在"));
         }
     }
@@ -97,11 +104,11 @@ fn validate_rule(state: &AppState, r: &NewAlertRule) -> Result<(String, Vec<i64>
         let mut ids = r.node_ids.clone();
         ids.sort_unstable();
         ids.dedup();
-        if ids.is_empty() {
+        if check_nodes && ids.is_empty() {
             return Err(ApiError::bad_request("请选择至少一个节点"));
         }
         let nodes = state.nodes();
-        if ids.iter().any(|id| !nodes.iter().any(|n| n.id == *id)) {
+        if check_nodes && ids.iter().any(|id| !nodes.iter().any(|n| n.id == *id)) {
             return Err(ApiError::bad_request("所选节点不存在"));
         }
         ids
@@ -159,7 +166,7 @@ async fn create_rule(
         node_ids: req.node_ids,
         probe_task_id: req.probe_task_id,
     };
-    (new.name, new.node_ids) = validate_rule(&state, &new)?;
+    (new.name, new.node_ids) = validate_rule(&state, &new, true, true)?;
     let db = state.db.clone();
     let rule = blocking(move || db.create_alert_rule(&new)).await?;
     reload_rules(&state).await?;
@@ -212,7 +219,12 @@ async fn update_rule(
         node_ids: req.node_ids.clone().unwrap_or(cur.node_ids),
         probe_task_id,
     };
-    let (name, node_ids) = validate_rule(&state, &merged)?;
+    let (name, node_ids) = validate_rule(
+        &state,
+        &merged,
+        matches!(req.probe_task_id, Some(Some(_))),
+        req.all_nodes.is_some() || req.node_ids.is_some(),
+    )?;
     let patch = AlertRulePatch {
         name: req.name.map(|_| name),
         enabled: req.enabled,
