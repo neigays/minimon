@@ -150,20 +150,47 @@ async fn sample(
     }
 }
 
-/// GET `url` 并读取正文（最多 `max` 字节）；仅 2xx 返回正文，其它情况 None。`limit` 为总超时。
-/// 用 HTTP/1.0 请求，避免分块编码。
-pub async fn http_get_body(url: &str, limit: Duration, max: usize) -> Option<String> {
-    timeout(limit, get_body(url, max)).await.ok().flatten()
+/// 地址族限定：域名同时解析出 IPv4 与 IPv6 时只连指定的一族。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IpFamily {
+    V4,
+    V6,
 }
 
-async fn get_body(url: &str, max: usize) -> Option<String> {
+impl IpFamily {
+    fn matches(self, ip: std::net::IpAddr) -> bool {
+        match self {
+            IpFamily::V4 => ip.is_ipv4(),
+            IpFamily::V6 => ip.is_ipv6(),
+        }
+    }
+}
+
+/// GET `url` 并读取正文（最多 `max` 字节）；仅 2xx 返回正文，其它情况 None。`limit` 为总超时。
+/// `family` 为 Some 时只连该地址族。用 HTTP/1.0 请求，避免分块编码。
+pub async fn http_get_body(
+    url: &str,
+    family: Option<IpFamily>,
+    limit: Duration,
+    max: usize,
+) -> Option<String> {
+    timeout(limit, get_body(url, family, max))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn get_body(url: &str, family: Option<IpFamily>, max: usize) -> Option<String> {
     let u = parse_url(url)?;
     let hostport = if u.host.contains(':') {
         format!("[{}]:{}", u.host, u.port)
     } else {
         format!("{}:{}", u.host, u.port)
     };
-    let addr = tokio::net::lookup_host(&hostport).await.ok()?.next()?;
+    let addr = tokio::net::lookup_host(&hostport)
+        .await
+        .ok()?
+        .find(|a| family.is_none_or(|f| f.matches(a.ip())))?;
     let tcp = TcpStream::connect(addr).await.ok()?;
     let raw = if u.https {
         let c = TlsConnector::from(tls_config()?);

@@ -2,8 +2,10 @@ use clap::Parser;
 use minimon_agent::config::Cli;
 
 fn main() -> anyhow::Result<()> {
+    // 输出到日志文件（OpenRC / launchd）时不带颜色控制字符，只在终端里着色。
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
     let cfg = Cli::parse().resolve()?;
     let rt = tokio::runtime::Builder::new_current_thread()

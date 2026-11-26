@@ -10,3 +10,4 @@ pub mod signal;
 
 pub use client::run;
 pub use config::AgentConfig;
+pub use netinfo::NetinfoUrls;

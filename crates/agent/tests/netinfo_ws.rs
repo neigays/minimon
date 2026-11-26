@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use minimon_agent::{AgentConfig, run};
+use minimon_agent::{AgentConfig, NetinfoUrls, run};
 use minimon_common::protocol::{AgentMsg, ServerMsg};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -35,13 +35,84 @@ async fn trace_mock() -> String {
     base
 }
 
+/// 前 `fail_first` 次请求返回 404，之后返回 trace 正文。
+async fn flaky_mock(fail_first: usize) -> String {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            let hits = hits.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf).await;
+                let n = hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let resp = if n >= fail_first {
+                    let body = "ip=203.0.113.9\nloc=CN\n";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_string()
+                };
+                let _ = s.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    base
+}
+
+/// 首次查询全部失败时不等 6 小时，按 `netinfo_retry` 很快重试。
+#[tokio::test]
+async fn agent_retries_netinfo_soon_after_failure() {
+    let base = flaky_mock(1).await;
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let mut cfg = AgentConfig::new(format!("ws://{addr}"), "tok");
+    cfg.netinfo_urls = Some(NetinfoUrls {
+        v4: vec![format!("{base}/v4")],
+        v6: vec![],
+    });
+    cfg.netinfo_retry = Duration::from_millis(300);
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let agent = tokio::spawn(run(cfg, async {
+        stop_rx.await.ok();
+    }));
+    let (s, _) = l.accept().await.unwrap();
+    let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+    let r = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(Ok(m)) = ws.next().await {
+            let Message::Text(t) = m else { continue };
+            match serde_json::from_str::<AgentMsg>(&t).unwrap() {
+                AgentMsg::Hello(_) => {
+                    let w =
+                        serde_json::to_string(&ServerMsg::Welcome { interval_secs: 1 }).unwrap();
+                    ws.send(Message::text(w)).await.unwrap();
+                }
+                AgentMsg::NetInfo(n) => return n,
+                _ => {}
+            }
+        }
+        panic!("连接提前结束");
+    })
+    .await;
+    let n = r.expect("10 秒内未收到重试后的 net_info");
+    assert_eq!(n.ipv4.as_deref(), Some("203.0.113.9"));
+    let _ = stop_tx.send(());
+    let _ = agent.await;
+}
+
 #[tokio::test]
 async fn agent_sends_netinfo_after_welcome() {
     let base = trace_mock().await;
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     let mut cfg = AgentConfig::new(format!("ws://{addr}"), "tok");
-    cfg.netinfo_urls = Some((format!("{base}/v4"), format!("{base}/v6")));
+    cfg.netinfo_urls = Some(NetinfoUrls {
+        v4: vec![format!("{base}/v4")],
+        v6: vec![format!("{base}/v6")],
+    });
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let agent = tokio::spawn(run(cfg, async {
         stop_rx.await.ok();

@@ -248,14 +248,16 @@ where
                 }
             }
             _ = net_tick.tick(), if cfg.netinfo_urls.is_some() => {
-                if let (Some((v4, v6)), true) = (cfg.netinfo_urls.clone(), net_jobs.is_empty()) {
-                    net_jobs.spawn(async move { crate::netinfo::detect(&v4, &v6).await });
+                if let (Some(urls), true) = (cfg.netinfo_urls.clone(), net_jobs.is_empty()) {
+                    net_jobs.spawn(async move { crate::netinfo::detect(&urls).await });
                 }
             }
             Some(res) = net_jobs.join_next() => {
                 let Ok(info) = res else { continue };
-                if info == NetInfo::default() {
-                    debug!("未能获取公网信息");
+                if info.ipv4.is_none() && info.ipv6.is_none() {
+                    let retry = cfg.netinfo_retry;
+                    warn!(retry_secs = retry.as_secs(), "未能获取公网 IP（Cloudflare trace 均不可达），稍后重试");
+                    net_tick.reset_after(retry);
                     continue;
                 }
                 let msg = match serde_json::to_string(&AgentMsg::NetInfo(info)) {
