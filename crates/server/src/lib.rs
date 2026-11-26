@@ -9,6 +9,7 @@ pub mod db;
 mod error;
 mod history;
 mod ingest;
+mod install_script;
 mod live;
 pub mod notify;
 pub mod period;
@@ -40,6 +41,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/agent/ws", get(ws_agent::handler))
         .route("/api/health", get(health))
+        .route("/install.sh", get(install_script::get))
         .route("/api/nodes", get(live::nodes))
         .route("/api/live", get(live::ws))
         .route("/api/nodes/{id}/history", get(history::get))

@@ -1,3 +1,5 @@
+mod common;
+
 use minimon_server::config::ServerConfig;
 use minimon_server::db::Db;
 use minimon_server::state::AppState;
@@ -59,4 +61,40 @@ async fn spa_fallback_and_api_not_swallowed() {
     let (code, head, _) = get(port, "/api/nodes").await;
     assert_eq!(code, 200);
     assert!(head.contains("application/json"));
+}
+
+#[tokio::test]
+async fn install_script_served() {
+    let (port, _dir) = start().await;
+    let (code, head, body) = get(port, "/install.sh").await;
+    assert_eq!(code, 200);
+    assert!(head.contains("content-type: text/x-shellscript"), "{head}");
+    assert!(head.contains("cache-control: no-cache"), "{head}");
+    assert!(body.starts_with("#!/"));
+    assert!(body.contains("neigays/minimon"));
+}
+
+#[tokio::test]
+async fn install_script_public_even_when_login_required() {
+    let fx = common::start(|_| {}).await;
+    let cookie = common::login(fx.port).await;
+    let (code, _, b) = common::http(
+        fx.port,
+        "PUT",
+        "/api/admin/settings",
+        Some(&cookie),
+        Some(r#"{"require_login": true}"#),
+    )
+    .await;
+    assert_eq!(code, 200, "{b}");
+    // 确认整站确实已要求登录
+    let (code, _, _) = common::http(fx.port, "GET", "/api/nodes", None, None).await;
+    assert_eq!(code, 401);
+    for path in ["/install.sh", "/install.sh?x=1"] {
+        let (code, _, body) = common::http(fx.port, "GET", path, None, None).await;
+        assert_eq!(code, 200, "{path}");
+        assert!(body.starts_with("#!/"));
+    }
+    let (code, _, _) = common::http(fx.port, "HEAD", "/install.sh", None, None).await;
+    assert_eq!(code, 200);
 }

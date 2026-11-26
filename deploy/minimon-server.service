@@ -1,0 +1,21 @@
+[Unit]
+Description=minimon server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=MINIMON_DATA_DIR=/var/lib/minimon
+# 可选：MINIMON_LISTEN、MINIMON_PUBLIC_URL、MINIMON_ADMIN_PASSWORD 等
+EnvironmentFile=-/etc/minimon/server.env
+ExecStart=/usr/local/bin/minimon-server serve
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+DynamicUser=yes
+StateDirectory=minimon
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -15,6 +15,7 @@ RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY deploy/install.sh deploy/install.sh
 COPY --from=web /src/web/dist web/dist
 RUN cargo build --release --locked -p minimon-server \
     && cp target/release/minimon-server /minimon-server
