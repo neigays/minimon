@@ -20,6 +20,8 @@ pub struct AgentConfig {
     /// 重连退避起点与上限（测试可调小，不暴露为命令行参数）。
     pub backoff_base: Duration,
     pub backoff_max: Duration,
+    /// 公网信息查询地址 (v4, v6)；None 不查询。`new` 默认关闭（测试不访问外网），命令行入口开启。
+    pub netinfo_urls: Option<(String, String)>,
 }
 
 impl AgentConfig {
@@ -31,6 +33,7 @@ impl AgentConfig {
             iface_include: Vec::new(),
             backoff_base: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
+            netinfo_urls: None,
         }
     }
 }
@@ -104,6 +107,10 @@ impl Cli {
         } else {
             self.iface_include
         };
+        cfg.netinfo_urls = Some((
+            crate::netinfo::V4_URL.to_string(),
+            crate::netinfo::V6_URL.to_string(),
+        ));
         Ok(cfg)
     }
 }

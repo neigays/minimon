@@ -150,6 +150,67 @@ async fn sample(
     }
 }
 
+/// GET `url` 并读取正文（最多 `max` 字节）；仅 2xx 返回正文，其它情况 None。`limit` 为总超时。
+/// 用 HTTP/1.0 请求，避免分块编码。
+pub async fn http_get_body(url: &str, limit: Duration, max: usize) -> Option<String> {
+    timeout(limit, get_body(url, max)).await.ok().flatten()
+}
+
+async fn get_body(url: &str, max: usize) -> Option<String> {
+    let u = parse_url(url)?;
+    let hostport = if u.host.contains(':') {
+        format!("[{}]:{}", u.host, u.port)
+    } else {
+        format!("{}:{}", u.host, u.port)
+    };
+    let addr = tokio::net::lookup_host(&hostport).await.ok()?.next()?;
+    let tcp = TcpStream::connect(addr).await.ok()?;
+    let raw = if u.https {
+        let c = TlsConnector::from(tls_config()?);
+        let name = ServerName::try_from(u.host.clone()).ok()?;
+        let mut s = c.connect(name, tcp).await.ok()?;
+        read_all(&mut s, &u, max).await?
+    } else {
+        let mut s = tcp;
+        read_all(&mut s, &u, max).await?
+    };
+    let text = String::from_utf8_lossy(&raw);
+    let (head, body) = text.split_once("\r\n\r\n")?;
+    let code: u16 = head.split(' ').nth(1)?.parse().ok()?;
+    (200..300).contains(&code).then(|| body.to_string())
+}
+
+async fn read_all<S>(s: &mut S, u: &Url, max: usize) -> Option<Vec<u8>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let req = format!(
+        "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: minimon-agent\r\nConnection: close\r\n\r\n",
+        u.path, u.host_header
+    );
+    s.write_all(req.as_bytes()).await.ok()?;
+    s.flush().await.ok()?;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        // TLS 对端不发 close_notify 直接断开时 read 报错：已读到的内容照样可用
+        let n = match s.read(&mut chunk).await {
+            Ok(n) => n,
+            Err(_) if !buf.is_empty() => 0,
+            Err(_) => return None,
+        };
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() >= max {
+            buf.truncate(max);
+            break;
+        }
+    }
+    Some(buf)
+}
+
 /// GET `url`；2xx/3xx 成功，其它状态计丢失。`limit` 为每个样本的总超时。
 pub async fn probe_http(url: &str, samples: u32, limit: Duration) -> ProbeOutcome {
     let Some(u) = parse_url(url) else {

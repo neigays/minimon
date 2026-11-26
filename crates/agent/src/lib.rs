@@ -4,6 +4,7 @@ pub mod backoff;
 pub mod client;
 pub mod collect;
 pub mod config;
+pub mod netinfo;
 pub mod probe;
 pub mod signal;
 

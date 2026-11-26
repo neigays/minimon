@@ -3,7 +3,7 @@
 //! agent 只发起出站连接，不执行任何外部命令。错误文案只使用固定短语，
 //! 绝不带上目标地址（server 会对访客隐藏 target）。
 
-mod http;
+pub(crate) mod http;
 mod icmp;
 mod tcp;
 

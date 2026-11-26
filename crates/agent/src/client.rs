@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
-use minimon_common::protocol::{AgentMsg, ServerMsg};
+use minimon_common::protocol::{AgentMsg, NetInfo, ServerMsg};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior, interval, interval_at, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -215,6 +216,11 @@ where
     // 断线期间不产生结果；重连后由新的 ProbeTasks 重建。
     let (probe_tx, mut probe_rx) = mpsc::channel(64);
     let mut probes = ProbeScheduler::with_icmp(probe_tx, icmp.clone());
+    // 公网信息：连上后立即查一次，之后每 6 小时；在后台任务里查，不阻塞上报。
+    // JoinSet 随本次连接 Drop，断线时进行中的查询一并取消。
+    let mut net_tick = interval(crate::netinfo::PERIOD);
+    net_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut net_jobs: JoinSet<NetInfo> = JoinSet::new();
 
     loop {
         tokio::select! {
@@ -239,6 +245,27 @@ where
                     Ok(()) => {}
                     Err(SendErr::Shutdown) => return Outcome::Shutdown,
                     Err(SendErr::Failed(e)) => return lost(healthy, format!("发送探测结果失败: {e}")),
+                }
+            }
+            _ = net_tick.tick(), if cfg.netinfo_urls.is_some() => {
+                if let (Some((v4, v6)), true) = (cfg.netinfo_urls.clone(), net_jobs.is_empty()) {
+                    net_jobs.spawn(async move { crate::netinfo::detect(&v4, &v6).await });
+                }
+            }
+            Some(res) = net_jobs.join_next() => {
+                let Ok(info) = res else { continue };
+                if info == NetInfo::default() {
+                    debug!("未能获取公网信息");
+                    continue;
+                }
+                let msg = match serde_json::to_string(&AgentMsg::NetInfo(info)) {
+                    Ok(s) => s,
+                    Err(e) => return lost(healthy, format!("序列化 net_info 失败: {e}")),
+                };
+                match send_frame(ws, Message::text(msg), shutdown).await {
+                    Ok(()) => {}
+                    Err(SendErr::Shutdown) => return Outcome::Shutdown,
+                    Err(SendErr::Failed(e)) => return lost(healthy, format!("发送公网信息失败: {e}")),
                 }
             }
             _ = ping_tick.tick() => {
