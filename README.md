@@ -60,7 +60,7 @@ docker exec minimon minimon-server admin reset-password
 curl -fsSL https://<面板地址>/install.sh | sudo bash -s -- --server wss://<面板地址> --token <token>
 ```
 
-脚本会从 GitHub Releases 下载对应平台的 agent、校验 SHA256、注册为 systemd（Linux）或 launchd（macOS）服务。
+脚本会从 GitHub Releases 下载对应平台的 agent、校验 SHA256、注册为系统服务（Linux 用 systemd 或 OpenRC，支持 Alpine；macOS 用 launchd）。
 
 - 国内机器下载慢：在命令末尾加 `--mirror <代理前缀>`
 - 升级：重新执行同一条命令。**先升级 server，再升级 agent**：新版 server 兼容旧 agent，但新版 agent 连旧版 server 会被拒绝（协议版本不兼容）
@@ -68,7 +68,7 @@ curl -fsSL https://<面板地址>/install.sh | sudo bash -s -- --server wss://<�
 
 支持的平台：Linux x86_64 / aarch64（musl 静态链接）、macOS aarch64。
 
-ICMP 探测需要非特权 ping（`net.ipv4.ping_group_range` 覆盖 agent 的 gid）或 `CAP_NET_RAW`（systemd unit 已授予）；都没有时显示「ICMP 不可用」，TCP / HTTP 探测不受影响。
+ICMP 探测需要非特权 ping（`net.ipv4.ping_group_range` 覆盖 agent 的 gid）或 `CAP_NET_RAW`（systemd unit 已授予；OpenRC 下 agent 以 root 运行）；都没有时显示「ICMP 不可用」，TCP / HTTP 探测不受影响。
 
 ### 3. 配置告警
 

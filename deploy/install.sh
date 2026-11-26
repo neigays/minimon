@@ -1,5 +1,5 @@
 #!/bin/sh
-# minimon agent 一键安装脚本（Linux systemd / macOS launchd）。
+# minimon agent 一键安装脚本（Linux systemd / OpenRC，macOS launchd）。
 #
 #   curl -fsSL https://<面板地址>/install.sh | sudo bash -s -- --server wss://<面板地址> --token <token>
 #
@@ -7,7 +7,8 @@
 #
 # 仅测试用的环境变量（不对用户宣传）：
 #   MINIMON_INSTALL_ROOT     所有安装路径加此前缀
-#   MINIMON_SKIP_SERVICE=1   不调用 systemctl / launchctl
+#   MINIMON_SKIP_SERVICE=1   不调用 systemctl / rc-service / launchctl
+#   MINIMON_INIT=systemd|openrc|none  覆盖 Linux 服务管理器检测
 #   MINIMON_RELEASE_BASE     替代 GitHub Releases 下载基址
 #   MINIMON_SKIP_ROOT_CHECK=1  跳过 root 检查
 #   MINIMON_UNAME_S / MINIMON_UNAME_M  覆盖 uname -s / uname -m
@@ -24,6 +25,8 @@ BIN_PATH=/usr/local/bin/minimon-agent
 ENV_DIR=/etc/minimon
 ENV_FILE=$ENV_DIR/agent.env
 UNIT_PATH=/etc/systemd/system/minimon-agent.service
+INITD_PATH=/etc/init.d/minimon-agent
+LINUX_LOG=/var/log/minimon-agent.log
 PLIST_PATH=/Library/LaunchDaemons/com.minimon.agent.plist
 LABEL=com.minimon.agent
 MAC_LOG=/var/log/minimon-agent.log
@@ -95,7 +98,7 @@ parse_args() {
     done
 }
 
-# 写入 agent.env 的值会被 systemd EnvironmentFile 与 launchd 包装命令里的 sh 解析，
+# 写入 agent.env 的值会被 systemd EnvironmentFile、OpenRC 与 launchd 包装命令里的 sh 解析，
 # 因此只允许安全字符：不含空白、引号、$、`、\、;、& 等。
 validate_install_args() {
     [ -n "$SERVER" ] || die "缺少 --server（面板地址，如 wss://example.com）"
@@ -154,8 +157,28 @@ has_systemd() {
     command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
 }
 
+has_openrc() {
+    command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1 &&
+        [ -x /sbin/openrc-run ] && [ -d /run/openrc ]
+}
+
 service_enabled() {
     [ "$SKIP_SERVICE" != 1 ]
+}
+
+# Linux 服务管理器：systemd、openrc 或 none。跳过服务时默认按 systemd 写文件。
+detect_init() {
+    if [ -n "${MINIMON_INIT:-}" ]; then
+        INIT=$MINIMON_INIT
+    elif has_systemd; then
+        INIT=systemd
+    elif has_openrc; then
+        INIT=openrc
+    elif service_enabled; then
+        INIT=none
+    else
+        INIT=systemd
+    fi
 }
 
 # 原子写入：先写同目录下的暂存文件，再 mv 覆盖。内容来自 stdin。
@@ -198,6 +221,32 @@ WantedBy=multi-user.target
 EOF
 }
 
+write_initd() {
+    write_atomic "$1" 755 <<'EOF'
+#!/sbin/openrc-run
+# minimon agent（OpenRC，Alpine 等）。连接信息在 /etc/minimon/agent.env（权限 600），token 不写进本文件。
+# 以 root 运行：OpenRC 没有 systemd 的 DynamicUser / AmbientCapabilities，ICMP 探测需要 RAW 套接字权限。
+description="minimon agent"
+supervisor=supervise-daemon
+command=/usr/local/bin/minimon-agent
+output_log=/var/log/minimon-agent.log
+error_log=/var/log/minimon-agent.log
+respawn_delay=5
+respawn_max=0
+
+depend() {
+	use net dns
+	after firewall
+}
+
+start_pre() {
+	set -a
+	. /etc/minimon/agent.env
+	set +a
+}
+EOF
+}
+
 write_plist() {
     write_atomic "$1" 644 <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -233,7 +282,11 @@ uninstall() {
         if service_enabled && command -v systemctl >/dev/null 2>&1; then
             systemctl disable --now minimon-agent >/dev/null 2>&1 || true
         fi
-        rm -f "$ROOT$UNIT_PATH"
+        if service_enabled && command -v rc-service >/dev/null 2>&1 && [ -e "$ROOT$INITD_PATH" ]; then
+            rc-service minimon-agent stop >/dev/null 2>&1 || true
+            rc-update del minimon-agent >/dev/null 2>&1 || true
+        fi
+        rm -f "$ROOT$UNIT_PATH" "$ROOT$INITD_PATH" "$ROOT$LINUX_LOG"
         if service_enabled && has_systemd; then
             systemctl daemon-reload || true
         fi
@@ -319,7 +372,16 @@ install_files() {
 }
 
 register_service() {
-    if [ "$OS" = linux ]; then
+    if [ "$OS" = linux ] && [ "$INIT" = openrc ]; then
+        mkdir -p "$ROOT$(dirname "$INITD_PATH")"
+        write_initd "$ROOT$INITD_PATH"
+        if service_enabled; then
+            rc-update add minimon-agent default >/dev/null 2>&1 || die "rc-update add minimon-agent 失败"
+            rc-service minimon-agent restart || die "启动失败，查看日志：tail $LINUX_LOG"
+        fi
+        STATUS_CMD="rc-service minimon-agent status"
+        LOG_CMD="tail -f $LINUX_LOG"
+    elif [ "$OS" = linux ]; then
         mkdir -p "$ROOT$(dirname "$UNIT_PATH")"
         write_unit "$ROOT$UNIT_PATH"
         if service_enabled; then
@@ -372,8 +434,12 @@ main() {
         die "不支持的平台：${UNAME_S}/${UNAME_M}（仅支持 linux-x86_64、linux-aarch64、darwin-aarch64）"
     fi
     # 在改动任何文件之前确认服务管理器可用，避免装了一半。
-    if [ "$OS" = linux ] && service_enabled && ! has_systemd; then
-        die "未检测到 systemd。请从 GitHub Releases 手动下载 minimon-agent-${OS}-${ARCH}，用 MINIMON_SERVER=… MINIMON_TOKEN=… minimon-agent 运行"
+    if [ "$OS" = linux ]; then
+        detect_init
+        case $INIT in
+            systemd | openrc) ;;
+            *) die "未检测到 systemd 或 OpenRC。请从 GitHub Releases 手动下载 minimon-agent-${OS}-${ARCH}，用 MINIMON_SERVER=… MINIMON_TOKEN=… minimon-agent 运行" ;;
+        esac
     fi
 
     download_and_verify

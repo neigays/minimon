@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+# minimon agent（OpenRC，Alpine 等）。连接信息在 /etc/minimon/agent.env（权限 600），token 不写进本文件。
+# 以 root 运行：OpenRC 没有 systemd 的 DynamicUser / AmbientCapabilities，ICMP 探测需要 RAW 套接字权限。
+description="minimon agent"
+supervisor=supervise-daemon
+command=/usr/local/bin/minimon-agent
+output_log=/var/log/minimon-agent.log
+error_log=/var/log/minimon-agent.log
+respawn_delay=5
+respawn_max=0
+
+depend() {
+	use net dns
+	after firewall
+}
+
+start_pre() {
+	set -a
+	. /etc/minimon/agent.env
+	set +a
+}

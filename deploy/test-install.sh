@@ -98,6 +98,7 @@ ROOT=
 OUT=
 UNAME_S=Linux
 UNAME_M=x86_64
+INIT=
 
 # 以测试开关运行 install.sh；输出写入 $OUT，返回 install.sh 的退出码。
 run_install() {
@@ -107,6 +108,7 @@ run_install() {
         MINIMON_RELEASE_BASE="$BASE_URL/releases" \
         MINIMON_UNAME_S="$UNAME_S" \
         MINIMON_UNAME_M="$UNAME_M" \
+        MINIMON_INIT="$INIT" \
         sh "$INSTALL_SH" "$@" >"$OUT" 2>&1
 }
 
@@ -140,6 +142,7 @@ BIN_PATH=usr/local/bin/minimon-agent
 ENV_PATH=etc/minimon/agent.env
 UNIT_PATH=etc/systemd/system/minimon-agent.service
 PLIST_PATH=Library/LaunchDaemons/com.minimon.agent.plist
+INITD_PATH=etc/init.d/minimon-agent
 
 # ---------------- 用例 ----------------
 
@@ -354,6 +357,36 @@ case_darwin_plist() {
     assert_no_file "$ROOT/$BIN_PATH"
 }
 
+case_openrc_initd() {
+    INIT=openrc
+    run_install --server wss://x --token sekrit123
+    assert_ok $?
+    assert_file "$ROOT/$INITD_PATH"
+    assert_mode "$ROOT/$INITD_PATH" -rwxr-xr-x
+    assert_same "$ROOT/$INITD_PATH" "$HERE/minimon-agent.openrc"
+    if grep -F "sekrit123" "$ROOT/$INITD_PATH" >/dev/null; then fail "init 脚本中出现 token"; fi
+    assert_no_file "$ROOT/$UNIT_PATH"
+    assert_file_has "$ROOT/$ENV_PATH" "MINIMON_TOKEN=sekrit123"
+    assert_mode "$ROOT/$ENV_PATH" -rw-------
+    assert_out_has "rc-service minimon-agent status"
+    assert_out_lacks "sekrit123"
+    run_install --uninstall
+    assert_ok $?
+    assert_no_file "$ROOT/$INITD_PATH"
+    assert_no_file "$ROOT/$BIN_PATH"
+    assert_no_file "$ROOT/$ENV_PATH"
+}
+
+case_no_init_system() {
+    INIT=none
+    run_install --server ws://x --token tok
+    assert_err $?
+    assert_out_has "systemd 或 OpenRC"
+    assert_no_file "$ROOT/$BIN_PATH"
+    [ -s "$ACCESS_LOG" ] && fail "没有服务管理器时不应发起下载"
+    return 0
+}
+
 case_unsupported_platform() {
     UNAME_S=FreeBSD
     run_install --server ws://x --token tok
@@ -387,7 +420,7 @@ case_root_required() {
 CASES="fresh_install ipv6_server_accepted fresh_install_via_bash_stdin reinstall_overwrites_and_bad_checksum_keeps_old
 missing_checksum_entry version_url mirror_prefix_join missing_args invalid_values unknown_arg_hides_value
 truncated_script_runs_nothing help uninstall
-uninstall_keeps_nonempty_config_dir darwin_plist unsupported_platform root_required"
+uninstall_keeps_nonempty_config_dir darwin_plist openrc_initd no_init_system unsupported_platform root_required"
 
 passed=0
 failed=0
@@ -398,7 +431,7 @@ for c in $CASES; do
     : >"$OUT"
     : >"$ACCESS_LOG"
     publish 0.1.0
-    if (UNAME_S=Linux UNAME_M=x86_64 "case_$c"); then
+    if (UNAME_S=Linux UNAME_M=x86_64 INIT='' "case_$c"); then
         echo "PASS $c"
         passed=$((passed + 1))
     else
