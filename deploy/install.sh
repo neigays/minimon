@@ -105,7 +105,7 @@ validate_install_args() {
         *) die "--server 必须以 ws:// 或 wss:// 开头" ;;
     esac
     case $SERVER in
-        *[!A-Za-z0-9._:/@%+=?#,-]*) die "--server 含有不允许的字符" ;;
+        *[!A-Za-z0-9._:/@%+=?#,\[\]-]*) die "--server 含有不允许的字符" ;;
     esac
     case $TOKEN in
         *[!A-Za-z0-9_-]*) die "--token 含有不允许的字符（只允许字母、数字、_、-）" ;;
@@ -335,7 +335,13 @@ register_service() {
         if service_enabled; then
             launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
             launchctl enable "system/$LABEL" >/dev/null 2>&1 || true
-            launchctl bootstrap system "$ROOT$PLIST_PATH" || die "launchctl bootstrap 失败"
+            # bootout 后服务可能尚未完全卸载，bootstrap 偶发失败，重试几次
+            boot_try=1
+            until launchctl bootstrap system "$ROOT$PLIST_PATH"; do
+                [ "$boot_try" -lt 3 ] || die "launchctl bootstrap 失败"
+                boot_try=$((boot_try + 1))
+                sleep 1
+            done
         fi
         STATUS_CMD="sudo launchctl print system/$LABEL"
         LOG_CMD="tail -f $MAC_LOG"

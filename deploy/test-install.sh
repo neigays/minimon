@@ -328,6 +328,12 @@ case_uninstall_keeps_nonempty_config_dir() {
     assert_file "$ROOT/etc/minimon/server.env"
 }
 
+case_ipv6_server_accepted() {
+    run_install --server 'ws://[2001:db8::1]:25780' --token tok
+    assert_ok $?
+    assert_file_has "$ROOT/$ENV_PATH" "MINIMON_SERVER=ws://[2001:db8::1]:25780"
+}
+
 case_darwin_plist() {
     UNAME_S=Darwin
     UNAME_M=arm64
@@ -378,7 +384,7 @@ case_root_required() {
 
 # ---------------- 运行 ----------------
 
-CASES="fresh_install fresh_install_via_bash_stdin reinstall_overwrites_and_bad_checksum_keeps_old
+CASES="fresh_install ipv6_server_accepted fresh_install_via_bash_stdin reinstall_overwrites_and_bad_checksum_keeps_old
 missing_checksum_entry version_url mirror_prefix_join missing_args invalid_values unknown_arg_hides_value
 truncated_script_runs_nothing help uninstall
 uninstall_keeps_nonempty_config_dir darwin_plist unsupported_platform root_required"
