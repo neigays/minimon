@@ -5,6 +5,7 @@ import { createAppRouter } from './router'
 import { initTheme } from './theme'
 import './styles/tokens.css'
 import './styles/base.css'
+import './styles/tags.css'
 
 async function boot() {
   initTheme()

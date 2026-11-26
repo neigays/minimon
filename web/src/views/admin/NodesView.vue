@@ -8,8 +8,10 @@ import { useLive, type PublicNode } from '../../live'
 import { statusOf } from '../../status'
 import { MODE_LABELS, type TrafficMode } from '../../traffic'
 import { blankForm, diffPatch, formFromNode } from '../../nodeForm'
+import TagList from '../../components/TagList.vue'
+import { previewTags } from '../../tags'
 
-type AdminNode = PublicNode & { hidden: boolean; ip: string | null; note: string; traffic_quota: number | null; traffic_reset_day: number; traffic_mode: TrafficMode; alert_offline: boolean }
+type AdminNode = PublicNode & { hidden: boolean; ip: string | null; note: string; traffic_quota: number | null; traffic_reset_day: number; traffic_mode: TrafficMode; alert_offline: boolean; tags_raw: string }
 
 const { nodes: liveNodes, connected } = useLive()
 const list = ref<AdminNode[]>([])
@@ -242,6 +244,14 @@ async function submitForm() {
         <div class="field"><label for="f-note">备注（仅管理员可见）</label><input id="f-note" v-model="form.note" maxlength="500" autocomplete="off" /></div>
         <template v-if="editing">
           <div class="field">
+            <label for="f-tags">标签（多个标签用 ; 分隔，末尾加 &lt;颜色&gt; 指定颜色）</label>
+            <input id="f-tags" v-model="form.tags" maxlength="400" placeholder="1Gbps<yellow>;CN2 GIA<red>" autocomplete="off" aria-describedby="f-tags-help" />
+            <div id="f-tags-help" class="tag-help">
+              <TagList v-if="previewTags(form.tags).length" :tags="previewTags(form.tags)" />
+              <span v-else class="muted">可用颜色：gray、red、orange、yellow、green、blue、purple、pink 等 Radix 色板名称，不写为 gray</span>
+            </div>
+          </div>
+          <div class="field">
             <label for="f-quota">月流量额度（留空表示不限，十进制：1 GB = 10⁹ 字节）</label>
             <div class="inline">
               <input id="f-quota" v-model="form.quota" inputmode="decimal" placeholder="不限" autocomplete="off" />
@@ -267,6 +277,7 @@ async function submitForm() {
 </template>
 
 <style scoped>
+.tag-help { margin-top: 6px; font-size: 12px; min-height: 18px; }
 .panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .panel-head h2 { font-size: 16px; margin: 0; }
 .spacer { flex: 1; }

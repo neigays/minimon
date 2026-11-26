@@ -1,0 +1,113 @@
+/* 节点标签配色：Radix Colors 3.0 第 3 级底色 + 第 11 级文字。深色默认，浅色规则与 tokens.css 一致。 */
+:root {
+  --tag-gray-bg: #222222; --tag-gray-fg: #b4b4b4;
+  --tag-gold-bg: #24231f; --tag-gold-fg: #cbb99f;
+  --tag-bronze-bg: #262220; --tag-bronze-fg: #d4b3a5;
+  --tag-brown-bg: #28211d; --tag-brown-fg: #dbb594;
+  --tag-yellow-bg: #2d2305; --tag-yellow-fg: #f5e147;
+  --tag-amber-bg: #302008; --tag-amber-fg: #ffca16;
+  --tag-orange-bg: #331e0b; --tag-orange-fg: #ffa057;
+  --tag-tomato-bg: #391714; --tag-tomato-fg: #ff977d;
+  --tag-red-bg: #3b1219; --tag-red-fg: #ff9592;
+  --tag-ruby-bg: #3a141e; --tag-ruby-fg: #ff949d;
+  --tag-crimson-bg: #381525; --tag-crimson-fg: #ff92ad;
+  --tag-pink-bg: #37172f; --tag-pink-fg: #ff8dcc;
+  --tag-plum-bg: #351a35; --tag-plum-fg: #e796f3;
+  --tag-purple-bg: #301c3b; --tag-purple-fg: #d19dff;
+  --tag-violet-bg: #291f43; --tag-violet-fg: #baa7ff;
+  --tag-iris-bg: #202248; --tag-iris-fg: #b1a9ff;
+  --tag-indigo-bg: #182449; --tag-indigo-fg: #9eb1ff;
+  --tag-blue-bg: #0d2847; --tag-blue-fg: #70b8ff;
+  --tag-cyan-bg: #082c36; --tag-cyan-fg: #4ccce6;
+  --tag-teal-bg: #0d2d2a; --tag-teal-fg: #0bd8b6;
+  --tag-jade-bg: #0f2e22; --tag-jade-fg: #1fd8a4;
+  --tag-green-bg: #132d21; --tag-green-fg: #3dd68c;
+  --tag-grass-bg: #1b2a1e; --tag-grass-fg: #71d083;
+  --tag-lime-bg: #1f2917; --tag-lime-fg: #bde56c;
+  --tag-mint-bg: #092c2b; --tag-mint-fg: #58d5ba;
+  --tag-sky-bg: #112840; --tag-sky-fg: #75c7f0;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --tag-gray-bg: #f0f0f0; --tag-gray-fg: #646464;
+    --tag-gold-bg: #f2f0e7; --tag-gold-fg: #71624b;
+    --tag-bronze-bg: #f6edea; --tag-bronze-fg: #7d5e54;
+    --tag-brown-bg: #f6eee7; --tag-brown-fg: #815e46;
+    --tag-yellow-bg: #fffab8; --tag-yellow-fg: #9e6c00;
+    --tag-amber-bg: #fff7c2; --tag-amber-fg: #ab6400;
+    --tag-orange-bg: #ffefd6; --tag-orange-fg: #cc4e00;
+    --tag-tomato-bg: #feebe7; --tag-tomato-fg: #d13415;
+    --tag-red-bg: #feebec; --tag-red-fg: #ce2c31;
+    --tag-ruby-bg: #feeaed; --tag-ruby-fg: #ca244d;
+    --tag-crimson-bg: #ffe9f0; --tag-crimson-fg: #cb1d63;
+    --tag-pink-bg: #fee9f5; --tag-pink-fg: #c2298a;
+    --tag-plum-bg: #fbebfb; --tag-plum-fg: #953ea3;
+    --tag-purple-bg: #f7edfe; --tag-purple-fg: #8145b5;
+    --tag-violet-bg: #f4f0fe; --tag-violet-fg: #6550b9;
+    --tag-iris-bg: #f0f1fe; --tag-iris-fg: #5753c6;
+    --tag-indigo-bg: #edf2fe; --tag-indigo-fg: #3a5bc7;
+    --tag-blue-bg: #e6f4fe; --tag-blue-fg: #0d74ce;
+    --tag-cyan-bg: #def7f9; --tag-cyan-fg: #107d98;
+    --tag-teal-bg: #e0f8f3; --tag-teal-fg: #008573;
+    --tag-jade-bg: #e6f7ed; --tag-jade-fg: #208368;
+    --tag-green-bg: #e6f6eb; --tag-green-fg: #218358;
+    --tag-grass-bg: #e9f6e9; --tag-grass-fg: #2a7e3b;
+    --tag-lime-bg: #eef6d6; --tag-lime-fg: #5c7c2f;
+    --tag-mint-bg: #ddf9f2; --tag-mint-fg: #027864;
+    --tag-sky-bg: #e1f6fd; --tag-sky-fg: #00749e;
+  }
+}
+:root[data-theme="light"] {
+  --tag-gray-bg: #f0f0f0; --tag-gray-fg: #646464;
+  --tag-gold-bg: #f2f0e7; --tag-gold-fg: #71624b;
+  --tag-bronze-bg: #f6edea; --tag-bronze-fg: #7d5e54;
+  --tag-brown-bg: #f6eee7; --tag-brown-fg: #815e46;
+  --tag-yellow-bg: #fffab8; --tag-yellow-fg: #9e6c00;
+  --tag-amber-bg: #fff7c2; --tag-amber-fg: #ab6400;
+  --tag-orange-bg: #ffefd6; --tag-orange-fg: #cc4e00;
+  --tag-tomato-bg: #feebe7; --tag-tomato-fg: #d13415;
+  --tag-red-bg: #feebec; --tag-red-fg: #ce2c31;
+  --tag-ruby-bg: #feeaed; --tag-ruby-fg: #ca244d;
+  --tag-crimson-bg: #ffe9f0; --tag-crimson-fg: #cb1d63;
+  --tag-pink-bg: #fee9f5; --tag-pink-fg: #c2298a;
+  --tag-plum-bg: #fbebfb; --tag-plum-fg: #953ea3;
+  --tag-purple-bg: #f7edfe; --tag-purple-fg: #8145b5;
+  --tag-violet-bg: #f4f0fe; --tag-violet-fg: #6550b9;
+  --tag-iris-bg: #f0f1fe; --tag-iris-fg: #5753c6;
+  --tag-indigo-bg: #edf2fe; --tag-indigo-fg: #3a5bc7;
+  --tag-blue-bg: #e6f4fe; --tag-blue-fg: #0d74ce;
+  --tag-cyan-bg: #def7f9; --tag-cyan-fg: #107d98;
+  --tag-teal-bg: #e0f8f3; --tag-teal-fg: #008573;
+  --tag-jade-bg: #e6f7ed; --tag-jade-fg: #208368;
+  --tag-green-bg: #e6f6eb; --tag-green-fg: #218358;
+  --tag-grass-bg: #e9f6e9; --tag-grass-fg: #2a7e3b;
+  --tag-lime-bg: #eef6d6; --tag-lime-fg: #5c7c2f;
+  --tag-mint-bg: #ddf9f2; --tag-mint-fg: #027864;
+  --tag-sky-bg: #e1f6fd; --tag-sky-fg: #00749e;
+}
+.tag[data-color="gray"] { background: var(--tag-gray-bg); color: var(--tag-gray-fg); }
+.tag[data-color="gold"] { background: var(--tag-gold-bg); color: var(--tag-gold-fg); }
+.tag[data-color="bronze"] { background: var(--tag-bronze-bg); color: var(--tag-bronze-fg); }
+.tag[data-color="brown"] { background: var(--tag-brown-bg); color: var(--tag-brown-fg); }
+.tag[data-color="yellow"] { background: var(--tag-yellow-bg); color: var(--tag-yellow-fg); }
+.tag[data-color="amber"] { background: var(--tag-amber-bg); color: var(--tag-amber-fg); }
+.tag[data-color="orange"] { background: var(--tag-orange-bg); color: var(--tag-orange-fg); }
+.tag[data-color="tomato"] { background: var(--tag-tomato-bg); color: var(--tag-tomato-fg); }
+.tag[data-color="red"] { background: var(--tag-red-bg); color: var(--tag-red-fg); }
+.tag[data-color="ruby"] { background: var(--tag-ruby-bg); color: var(--tag-ruby-fg); }
+.tag[data-color="crimson"] { background: var(--tag-crimson-bg); color: var(--tag-crimson-fg); }
+.tag[data-color="pink"] { background: var(--tag-pink-bg); color: var(--tag-pink-fg); }
+.tag[data-color="plum"] { background: var(--tag-plum-bg); color: var(--tag-plum-fg); }
+.tag[data-color="purple"] { background: var(--tag-purple-bg); color: var(--tag-purple-fg); }
+.tag[data-color="violet"] { background: var(--tag-violet-bg); color: var(--tag-violet-fg); }
+.tag[data-color="iris"] { background: var(--tag-iris-bg); color: var(--tag-iris-fg); }
+.tag[data-color="indigo"] { background: var(--tag-indigo-bg); color: var(--tag-indigo-fg); }
+.tag[data-color="blue"] { background: var(--tag-blue-bg); color: var(--tag-blue-fg); }
+.tag[data-color="cyan"] { background: var(--tag-cyan-bg); color: var(--tag-cyan-fg); }
+.tag[data-color="teal"] { background: var(--tag-teal-bg); color: var(--tag-teal-fg); }
+.tag[data-color="jade"] { background: var(--tag-jade-bg); color: var(--tag-jade-fg); }
+.tag[data-color="green"] { background: var(--tag-green-bg); color: var(--tag-green-fg); }
+.tag[data-color="grass"] { background: var(--tag-grass-bg); color: var(--tag-grass-fg); }
+.tag[data-color="lime"] { background: var(--tag-lime-bg); color: var(--tag-lime-fg); }
+.tag[data-color="mint"] { background: var(--tag-mint-bg); color: var(--tag-mint-fg); }
+.tag[data-color="sky"] { background: var(--tag-sky-bg); color: var(--tag-sky-fg); }

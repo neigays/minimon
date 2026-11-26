@@ -30,3 +30,10 @@ test('alert_offline defaults to true and only that change is patched', () => {
   expect(formFromNode({ ...node, alert_offline: false }).alertOffline).toBe(false)
   expect(diffPatch(seed, { ...seed, alertOffline: false })).toEqual({ alert_offline: false })
 })
+test('tags come from tags_raw and only changed tags are patched', () => {
+  const seed = formFromNode({ ...node, tags_raw: 'BGP' })
+  expect(seed.tags).toBe('BGP')
+  expect(formFromNode(node).tags).toBe('')
+  expect(diffPatch(seed, { ...seed })).toEqual({})
+  expect(diffPatch(seed, { ...seed, tags: 'BGP;1G<red>' })).toEqual({ tags: 'BGP;1G<red>' })
+})

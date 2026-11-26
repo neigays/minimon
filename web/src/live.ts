@@ -1,3 +1,4 @@
+import type { Tag } from './tags'
 import { ref, watch } from 'vue'
 import { api } from './api'
 import { useAuth } from './auth'
@@ -27,6 +28,7 @@ export interface Report {
 export interface PublicNode {
   id: number
   name: string
+  tags: Tag[]
   online: boolean
   sort: number
   group: string

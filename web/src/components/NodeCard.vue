@@ -8,6 +8,7 @@ import { level, offlineFor, statusOf, usagePct } from '../status'
 import Meter from './Meter.vue'
 import ProbeRow from './ProbeRow.vue'
 import StatusPill from './StatusPill.vue'
+import TagList from './TagList.vue'
 
 const { user } = useAuth()
 const props = defineProps<{ node: PublicNode; connected: boolean; now: number }>()
@@ -37,6 +38,7 @@ const offlineText = computed(() => {
       <span class="name">{{ node.name }}</span>
       <StatusPill class="pill" :status="status" />
     </div>
+    <TagList v-if="node.tags?.length" class="card-tags" :tags="node.tags" />
     <div class="sub">{{ sub }}</div>
     <template v-if="r">
       <Meter label="CPU" :pct="r.cpu" :value="r.cpu.toFixed(0) + '%'" />
@@ -75,6 +77,7 @@ const offlineText = computed(() => {
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 14px 12px; display: grid; gap: 10px; text-decoration: none; cursor: pointer; transition: border-color 0.2s; min-width: 0; }
 .card:hover { border-color: var(--line-strong); }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.card-tags { margin-top: -2px; }
 .region { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line-strong); color: var(--fg-2); flex: none; }
 .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pill { margin-left: auto; }

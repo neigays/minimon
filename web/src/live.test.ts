@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import { applyMsg, isLive, liveUrl, loginRequiredAfterGuestSuccess, viewerChanged, type PublicNode, type Report } from './live'
 
 const node = (id: number, online = false): PublicNode => ({
-  id, name: `n${id}`, online, sort: 0, group: '', region: '', os: null, arch: null,
+  id, name: `n${id}`, tags: [], online, sort: 0, group: '', region: '', os: null, arch: null,
   cpu_model: null, cpu_cores: null, virtualization: null, mem_total: null, swap_total: null,
   disk_total: null, last_seen_ms: null, latest: null, probes: [],
 })

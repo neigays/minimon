@@ -10,6 +10,7 @@ import { useLive, type PublicNode } from '../live'
 import { statusOf } from '../status'
 import { buildProbeCharts, fetchProbeHistory, type ProbeHistory } from '../probe'
 import { api } from '../api'
+import TagList from '../components/TagList.vue'
 import { expireLevel, expireText, formatDecBytes, formatPeriodDay, MODE_LABELS } from '../traffic'
 
 type Info = PublicNode & { hostname?: string | null; kernel?: string | null; agent_version?: string | null; ip?: string | null; note?: string }
@@ -169,6 +170,7 @@ const adminExtra = computed<[string, string, string][]>(() => {
         <h1>{{ node.name }}</h1>
         <StatusPill :status="status" />
         <span v-if="node.group" class="gran">{{ node.group }}</span>
+        <TagList v-if="node.tags?.length" :tags="node.tags" />
       </div>
       <p v-else-if="!loaded" class="muted">加载中…</p>
 
