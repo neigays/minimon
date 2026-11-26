@@ -27,11 +27,13 @@ pub struct TsNormalizer {
 }
 
 impl TsNormalizer {
-    /// `seed` 为该节点最后已知的时间戳（没有则 `None`）；晚于 `now` 的种子视为无效，避免永久前置。
+    /// `seed` 为该节点最后已知的时间戳（没有则 `None`）。种子上限为 `now + TS_SKEW_MAX_MS`：
+    /// 合法保留的时间戳最多超前这么多，限制到 `now` 会让快 ~10s 的 agent 在 10 秒内重连后写出
+    /// 早于已存样本的时间戳；更远的未来种子视为无效，避免永久前置。
     pub fn new(seed: Option<i64>, now: i64) -> Self {
         Self {
             sticky: false,
-            last_ts: seed.map_or(i64::MIN, |s| s.min(now)),
+            last_ts: seed.map_or(i64::MIN, |s| s.min(now.saturating_add(TS_SKEW_MAX_MS))),
         }
     }
 
@@ -100,8 +102,21 @@ mod tests {
         let mut n = TsNormalizer::new(Some(500), 1_000);
         assert_eq!(n.apply(400, 1_000), (501, true));
         assert_eq!(n.apply(400, 1_000), (502, true));
-        // 未来种子被限制到 now。
+        // 未来种子被限制到 now + TS_SKEW_MAX_MS。
         let mut f = TsNormalizer::new(Some(9_999_999), 1_000);
-        assert_eq!(f.apply(1_000, 1_000), (1_001, true));
+        assert_eq!(f.apply(1_000, 1_000), (11_001, true));
+    }
+
+    #[test]
+    fn seed_within_skew_survives_quick_reconnect() {
+        // 上一条连接保留了超前 9.9s 的时间戳；1 秒后重连，首条样本被替换为接收时间，
+        // 仍不得早于已存样本，否则累计计数器看起来回落，流量被重复计入。
+        let now = 1_000_000;
+        let stored = now + 9_900;
+        let now2 = now + 1_000;
+        let mut n = TsNormalizer::new(Some(stored), now2);
+        let (ts, replaced) = n.apply(now2 + 10_500, now2);
+        assert!(replaced);
+        assert!(ts > stored, "ts {ts} must be after stored {stored}");
     }
 }
