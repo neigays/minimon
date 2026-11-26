@@ -11,10 +11,10 @@
 #   MINIMON_RELEASE_BASE     替代 GitHub Releases 下载基址
 #   MINIMON_SKIP_ROOT_CHECK=1  跳过 root 检查
 #   MINIMON_UNAME_S / MINIMON_UNAME_M  覆盖 uname -s / uname -m
+#
+# 结构约定：文件只包含常量与函数定义，唯一的顶层执行语句是最后一行 `main "$@"`。
+# 这样 `curl | bash` 中途断开、只收到半个脚本时什么都不会执行。
 set -eu
-
-# 新建的二进制、unit、目录一律 755/644；agent.env 单独用 077 创建。
-umask 022
 
 RELEASE_BASE=${MINIMON_RELEASE_BASE:-https://github.com/neigays/minimon/releases}
 ROOT=${MINIMON_INSTALL_ROOT:-}
@@ -41,8 +41,6 @@ cleanup() {
     if [ -n "$STAGED" ]; then rm -f "$STAGED"; fi
     if [ -n "$DL_DIR" ]; then rm -rf "$DL_DIR"; fi
 }
-trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
 
 info() { printf '%s\n' "$*"; }
 die() {
@@ -76,21 +74,26 @@ need_value() {
     [ "$2" -ge 2 ] || die "参数 $1 缺少值"
 }
 
-while [ $# -gt 0 ]; do
-    case $1 in
-        --server) need_value "$1" $#; SERVER=$2; shift 2 ;;
-        --server=*) SERVER=${1#*=}; shift ;;
-        --token) need_value "$1" $#; TOKEN=$2; shift 2 ;;
-        --token=*) TOKEN=${1#*=}; shift ;;
-        --mirror) need_value "$1" $#; MIRROR=$2; shift 2 ;;
-        --mirror=*) MIRROR=${1#*=}; shift ;;
-        --version) need_value "$1" $#; VERSION=$2; shift 2 ;;
-        --version=*) VERSION=${1#*=}; shift ;;
-        --uninstall) UNINSTALL=1; shift ;;
-        -h | --help) usage; exit 0 ;;
-        *) die "未知参数：$1（用 --help 查看用法）" ;;
-    esac
-done
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --server) need_value "$1" $#; SERVER=$2; shift 2 ;;
+            --server=*) SERVER=${1#*=}; shift ;;
+            --token) need_value "$1" $#; TOKEN=$2; shift 2 ;;
+            --token=*) TOKEN=${1#*=}; shift ;;
+            --mirror) need_value "$1" $#; MIRROR=$2; shift 2 ;;
+            --mirror=*) MIRROR=${1#*=}; shift ;;
+            --version) need_value "$1" $#; VERSION=$2; shift 2 ;;
+            --version=*) VERSION=${1#*=}; shift ;;
+            --uninstall) UNINSTALL=1; shift ;;
+            -h | --help) usage; exit 0 ;;
+            # 未知参数可能就是拼错的 --token=<值> 或误放的 token 本身：只回显参数名，不回显值。
+            --*=*) die "未知参数：${1%%=*}（用 --help 查看用法）" ;;
+            -*) die "未知参数：${1}（用 --help 查看用法）" ;;
+            *) die "未知参数（用 --help 查看用法）" ;;
+        esac
+    done
+}
 
 # 写入 agent.env 的值会被 systemd EnvironmentFile 与 launchd 包装命令里的 sh 解析，
 # 因此只允许安全字符：不含空白、引号、$、`、\、;、& 等。
@@ -122,28 +125,28 @@ validate_install_args() {
     fi
 }
 
-if [ "$UNINSTALL" -eq 0 ]; then
-    validate_install_args
-fi
-
 # ---------------- root 与平台 ----------------
 
-if [ "${MINIMON_SKIP_ROOT_CHECK:-0}" != 1 ] && [ "$(id -u)" -ne 0 ]; then
-    die "需要 root 权限，请用 sudo 重新执行（例如 curl … | sudo bash -s -- …）"
-fi
+check_root() {
+    if [ "${MINIMON_SKIP_ROOT_CHECK:-0}" != 1 ] && [ "$(id -u)" -ne 0 ]; then
+        die "需要 root 权限，请用 sudo 重新执行（例如 curl … | sudo bash -s -- …）"
+    fi
+}
 
-UNAME_S=${MINIMON_UNAME_S:-$(uname -s)}
-UNAME_M=${MINIMON_UNAME_M:-$(uname -m)}
-case $UNAME_S in
-    Linux) OS=linux ;;
-    Darwin) OS=darwin ;;
-    *) die "不支持的平台：$UNAME_S/$UNAME_M" ;;
-esac
-case $UNAME_M in
-    x86_64 | amd64) ARCH=x86_64 ;;
-    aarch64 | arm64) ARCH=aarch64 ;;
-    *) ARCH=unknown ;;
-esac
+detect_platform() {
+    UNAME_S=${MINIMON_UNAME_S:-$(uname -s)}
+    UNAME_M=${MINIMON_UNAME_M:-$(uname -m)}
+    case $UNAME_S in
+        Linux) OS=linux ;;
+        Darwin) OS=darwin ;;
+        *) die "不支持的平台：${UNAME_S}/${UNAME_M}" ;;
+    esac
+    case $UNAME_M in
+        x86_64 | amd64) ARCH=x86_64 ;;
+        aarch64 | arm64) ARCH=aarch64 ;;
+        *) ARCH=unknown ;;
+    esac
+}
 
 # ---------------- 服务管理 ----------------
 
@@ -246,32 +249,8 @@ uninstall() {
     info "minimon-agent 已卸载"
 }
 
-if [ "$UNINSTALL" -eq 1 ]; then
-    uninstall
-    exit 0
-fi
-
-if [ "$ARCH" = unknown ] || [ "$OS-$ARCH" = darwin-x86_64 ]; then
-    die "不支持的平台：${UNAME_S}/${UNAME_M}（仅支持 linux-x86_64、linux-aarch64、darwin-aarch64）"
-fi
-
-# 在改动任何文件之前确认服务管理器可用，避免装了一半。
-if [ "$OS" = linux ] && service_enabled && ! has_systemd; then
-    die "未检测到 systemd。请从 GitHub Releases 手动下载 minimon-agent-${OS}-${ARCH}，用 MINIMON_SERVER=… MINIMON_TOKEN=… minimon-agent 运行"
-fi
 
 # ---------------- 下载与校验 ----------------
-
-FILE=minimon-agent-$OS-$ARCH
-case $MIRROR in
-    '' | */) ;;
-    *) MIRROR=$MIRROR/ ;;
-esac
-if [ -n "$VERSION" ]; then
-    URL_DIR=$MIRROR$RELEASE_BASE/download/v$VERSION
-else
-    URL_DIR=$MIRROR$RELEASE_BASE/latest/download
-fi
 
 fetch() {
     # $1 = URL，$2 = 输出文件
@@ -294,63 +273,117 @@ sha256_of() {
     fi
 }
 
-DL_DIR=$(mktemp -d)
-info "下载 $FILE …"
-fetch "$URL_DIR/$FILE" "$DL_DIR/$FILE" || die "下载失败：$URL_DIR/$FILE"
-fetch "$URL_DIR/SHA256SUMS" "$DL_DIR/SHA256SUMS" || die "下载失败：$URL_DIR/SHA256SUMS"
+# 下载 $FILE 与 SHA256SUMS 到 $DL_DIR 并校验；失败时已安装文件不受影响。
+download_and_verify() {
+    FILE=minimon-agent-$OS-$ARCH
+    case $MIRROR in
+        '' | */) ;;
+        *) MIRROR=$MIRROR/ ;;
+    esac
+    if [ -n "$VERSION" ]; then
+        URL_DIR=$MIRROR$RELEASE_BASE/download/v$VERSION
+    else
+        URL_DIR=$MIRROR$RELEASE_BASE/latest/download
+    fi
 
-# SHA256SUMS 为 sha256sum 输出格式：<hash>  <文件名>（二进制模式下文件名前带 *）
-EXPECTED=$(awk -v f="$FILE" '$2 == f || $2 == "*" f { print tolower($1); exit }' "$DL_DIR/SHA256SUMS")
-[ -n "$EXPECTED" ] || die "校验失败：SHA256SUMS 中没有 $FILE"
-ACTUAL=$(sha256_of "$DL_DIR/$FILE")
-[ "$EXPECTED" = "$ACTUAL" ] || die "校验失败：$FILE 的 SHA256 不匹配（文件损坏或镜像不可用），已中止，原有安装未改动"
+    DL_DIR=$(mktemp -d)
+    info "下载 $FILE …"
+    fetch "$URL_DIR/$FILE" "$DL_DIR/$FILE" || die "下载失败：$URL_DIR/$FILE"
+    fetch "$URL_DIR/SHA256SUMS" "$DL_DIR/SHA256SUMS" || die "下载失败：$URL_DIR/SHA256SUMS"
+
+    # SHA256SUMS 为 sha256sum 输出格式：<hash>  <文件名>（二进制模式下文件名前带 *）
+    EXPECTED=$(awk -v f="$FILE" '$2 == f || $2 == "*" f { print tolower($1); exit }' "$DL_DIR/SHA256SUMS")
+    [ -n "$EXPECTED" ] || die "校验失败：SHA256SUMS 中没有 $FILE"
+    ACTUAL=$(sha256_of "$DL_DIR/$FILE")
+    [ "$EXPECTED" = "$ACTUAL" ] || die "校验失败：$FILE 的 SHA256 不匹配（文件损坏或镜像不可用），已中止，原有安装未改动"
+}
 
 # ---------------- 安装 ----------------
 
-mkdir -p "$ROOT$(dirname "$BIN_PATH")"
-write_atomic "$ROOT$BIN_PATH" 755 <"$DL_DIR/$FILE"
+install_files() {
+    mkdir -p "$ROOT$(dirname "$BIN_PATH")"
+    write_atomic "$ROOT$BIN_PATH" 755 <"$DL_DIR/$FILE"
 
-mkdir -p "$ROOT$ENV_DIR"
-chmod 755 "$ROOT$ENV_DIR"
-# 用 printf 内建写入，token 不会出现在进程参数里；umask 077 保证文件从创建起就不可被他人读取。
-STAGED=$ROOT$ENV_DIR/.agent.env.new
-rm -f "$STAGED"
-(
-    umask 077
-    printf 'MINIMON_SERVER=%s\nMINIMON_TOKEN=%s\n' "$SERVER" "$TOKEN" >"$STAGED"
-)
-chmod 600 "$STAGED"
-mv -f "$STAGED" "$ROOT$ENV_FILE"
-STAGED=
+    mkdir -p "$ROOT$ENV_DIR"
+    chmod 755 "$ROOT$ENV_DIR"
+    # 用 printf 内建写入，token 不会出现在进程参数里；umask 077 保证文件从创建起就不可被他人读取。
+    STAGED=$ROOT$ENV_DIR/.agent.env.new
+    rm -f "$STAGED"
+    (
+        umask 077
+        printf 'MINIMON_SERVER=%s\nMINIMON_TOKEN=%s\n' "$SERVER" "$TOKEN" >"$STAGED"
+    )
+    chmod 600 "$STAGED"
+    mv -f "$STAGED" "$ROOT$ENV_FILE"
+    STAGED=
+}
 
-INSTALLED_VERSION=$("$ROOT$BIN_PATH" --version 2>/dev/null | head -n 1) || true
-[ -n "$INSTALLED_VERSION" ] || INSTALLED_VERSION=${VERSION:-最新版}
-
-if [ "$OS" = linux ]; then
-    mkdir -p "$ROOT$(dirname "$UNIT_PATH")"
-    write_unit "$ROOT$UNIT_PATH"
-    if service_enabled; then
-        systemctl daemon-reload || die "systemctl daemon-reload 失败"
-        systemctl enable minimon-agent >/dev/null 2>&1 || die "systemctl enable minimon-agent 失败"
-        systemctl restart minimon-agent || die "启动失败，查看日志：journalctl -u minimon-agent -e"
+register_service() {
+    if [ "$OS" = linux ]; then
+        mkdir -p "$ROOT$(dirname "$UNIT_PATH")"
+        write_unit "$ROOT$UNIT_PATH"
+        if service_enabled; then
+            systemctl daemon-reload || die "systemctl daemon-reload 失败"
+            systemctl enable minimon-agent >/dev/null 2>&1 || die "systemctl enable minimon-agent 失败"
+            systemctl restart minimon-agent || die "启动失败，查看日志：journalctl -u minimon-agent -e"
+        fi
+        STATUS_CMD="systemctl status minimon-agent"
+        LOG_CMD="journalctl -u minimon-agent -f"
+    else
+        mkdir -p "$ROOT$(dirname "$PLIST_PATH")"
+        write_plist "$ROOT$PLIST_PATH"
+        if service_enabled; then
+            launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+            launchctl enable "system/$LABEL" >/dev/null 2>&1 || true
+            launchctl bootstrap system "$ROOT$PLIST_PATH" || die "launchctl bootstrap 失败"
+        fi
+        STATUS_CMD="sudo launchctl print system/$LABEL"
+        LOG_CMD="tail -f $MAC_LOG"
     fi
-    STATUS_CMD="systemctl status minimon-agent"
-    LOG_CMD="journalctl -u minimon-agent -f"
-else
-    mkdir -p "$ROOT$(dirname "$PLIST_PATH")"
-    write_plist "$ROOT$PLIST_PATH"
-    if service_enabled; then
-        launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
-        launchctl enable "system/$LABEL" >/dev/null 2>&1 || true
-        launchctl bootstrap system "$ROOT$PLIST_PATH" || die "launchctl bootstrap 失败"
-    fi
-    STATUS_CMD="sudo launchctl print system/$LABEL"
-    LOG_CMD="tail -f $MAC_LOG"
-fi
+}
 
-info ""
-info "minimon-agent 安装完成：$INSTALLED_VERSION"
-info "  面板地址：$SERVER"
-info "  查看状态：$STATUS_CMD"
-info "  查看日志：$LOG_CMD"
-info "  卸载：重新执行本脚本并加 --uninstall"
+# ---------------- 入口 ----------------
+
+main() {
+    # 新建的二进制、unit、目录一律 755/644；agent.env 单独用 077 创建。
+    umask 022
+    trap cleanup EXIT
+    trap 'exit 1' HUP INT TERM
+
+    parse_args "$@"
+    if [ "$UNINSTALL" -eq 0 ]; then
+        validate_install_args
+    fi
+    check_root
+    detect_platform
+
+    if [ "$UNINSTALL" -eq 1 ]; then
+        uninstall
+        exit 0
+    fi
+
+    if [ "$ARCH" = unknown ] || [ "$OS-$ARCH" = darwin-x86_64 ]; then
+        die "不支持的平台：${UNAME_S}/${UNAME_M}（仅支持 linux-x86_64、linux-aarch64、darwin-aarch64）"
+    fi
+    # 在改动任何文件之前确认服务管理器可用，避免装了一半。
+    if [ "$OS" = linux ] && service_enabled && ! has_systemd; then
+        die "未检测到 systemd。请从 GitHub Releases 手动下载 minimon-agent-${OS}-${ARCH}，用 MINIMON_SERVER=… MINIMON_TOKEN=… minimon-agent 运行"
+    fi
+
+    download_and_verify
+    install_files
+    register_service
+
+    INSTALLED_VERSION=$("$ROOT$BIN_PATH" --version 2>/dev/null | head -n 1) || true
+    [ -n "$INSTALLED_VERSION" ] || INSTALLED_VERSION=${VERSION:-最新版}
+
+    info ""
+    info "minimon-agent 安装完成：$INSTALLED_VERSION"
+    info "  面板地址：$SERVER"
+    info "  查看状态：$STATUS_CMD"
+    info "  查看日志：$LOG_CMD"
+    info "  卸载：重新执行本脚本并加 --uninstall"
+}
+
+# 必须是文件最后一行：脚本未完整下载时不会执行任何操作。
+main "$@"

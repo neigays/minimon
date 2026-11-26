@@ -266,6 +266,35 @@ MINIMON_EVIL=1" --token tok
     assert_out_has "--bogus"
 }
 
+case_unknown_arg_hides_value() {
+    run_install --server ws://x --tokn=secret123
+    assert_err $?
+    assert_out_has "--tokn"
+    assert_out_lacks "secret123"
+    run_install --server ws://x --token tok secret456
+    assert_err $?
+    assert_out_has "未知参数"
+    assert_out_lacks "secret456"
+    assert_no_file "$ROOT/$ENV_PATH"
+}
+
+# curl | bash 中途断开：脚本在最后一行 main "$@" 之前被截断时不得执行任何操作。
+case_truncated_script_runs_nothing() {
+    last=$(tail -n 1 "$INSTALL_SH")
+    [ "$last" = 'main "$@"' ] || fail "install.sh 最后一行应为 main \"\$@\"，实际：$last"
+    n=$(wc -l <"$INSTALL_SH")
+    head -n "$((n - 1))" "$INSTALL_SH" >"$WORK/truncated.sh"
+    env MINIMON_INSTALL_ROOT="$ROOT" MINIMON_SKIP_SERVICE=1 MINIMON_SKIP_ROOT_CHECK=1 \
+        MINIMON_RELEASE_BASE="$BASE_URL/releases" MINIMON_UNAME_S=Linux MINIMON_UNAME_M=x86_64 \
+        sh -s -- --server ws://x --token tok <"$WORK/truncated.sh" >"$OUT" 2>&1
+    assert_no_file "$ROOT/$BIN_PATH"
+    assert_no_file "$ROOT/$ENV_PATH"
+    assert_no_file "$ROOT/$UNIT_PATH"
+    [ -s "$ACCESS_LOG" ] && fail "截断的脚本不应发起下载"
+    [ -s "$OUT" ] && fail "截断的脚本不应有任何输出"
+    return 0
+}
+
 case_help() {
     run_install --help
     assert_ok $?
@@ -350,7 +379,8 @@ case_root_required() {
 # ---------------- 运行 ----------------
 
 CASES="fresh_install fresh_install_via_bash_stdin reinstall_overwrites_and_bad_checksum_keeps_old
-missing_checksum_entry version_url mirror_prefix_join missing_args invalid_values help uninstall
+missing_checksum_entry version_url mirror_prefix_join missing_args invalid_values unknown_arg_hides_value
+truncated_script_runs_nothing help uninstall
 uninstall_keeps_nonempty_config_dir darwin_plist unsupported_platform root_required"
 
 passed=0
