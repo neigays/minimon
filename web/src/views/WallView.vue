@@ -79,6 +79,6 @@ const summary = computed(() => {
 .chip:hover { border-color: var(--line-strong); }
 .chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .n { color: var(--muted); margin-left: 4px; }
-.chip[aria-pressed="true"] .n { color: inherit; opacity: 0.7; }
+.chip[aria-pressed="true"] .n { color: inherit; opacity: 0.85; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); gap: 14px; }
 </style>

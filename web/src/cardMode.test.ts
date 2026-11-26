@@ -20,3 +20,7 @@ test('never reported anything is never', () => {
   expect(cardMode(node({ latest: null, os: null }), true)).toBe('never')
   expect(cardMode(node({ latest: null, os: null, online: false }), false)).toBe('never')
 })
+test('online with system info but no report yet is waiting, not offline', () => {
+  expect(cardMode(node({ latest: null }), true)).toBe('waiting')
+  expect(cardMode(node({ latest: null }), false)).toBe('stale')
+})

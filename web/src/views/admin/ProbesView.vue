@@ -263,7 +263,7 @@ td.name { font-weight: 550; max-width: 160px; overflow: hidden; text-overflow: e
 td.target { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 td.scope { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 td.empty { text-align: center; white-space: normal; }
-.act { color: var(--accent); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.act { color: var(--accent-text); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .ops-in { display: flex; gap: 2px; align-items: center; }
 .switch { width: 32px; height: 18px; border-radius: 999px; background: var(--line); border: 0; position: relative; cursor: pointer; vertical-align: middle; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); transition: left 0.15s; }
@@ -277,7 +277,7 @@ td.empty { text-align: center; white-space: normal; }
 .dlg form { display: grid; gap: 12px; }
 .dlg h3 { margin: 0; font-size: 15px; }
 .dlg select { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
-.dlg select:focus, .dlg input:focus { border-color: var(--accent); outline: none; }
+.dlg select:focus, .dlg input:focus { border-color: var(--accent-text); outline: none; }
 .trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .trio label { font-size: 12px; }
 .chk label { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }

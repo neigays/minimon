@@ -277,7 +277,7 @@ h3 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.0
 .b-name { font-weight: 550; min-width: 64px; }
 .grace { display: flex; gap: 8px; align-items: center; margin-left: auto; font-size: 13px; color: var(--fg-2); }
 .gin { width: 80px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
-.gin:focus { border-color: var(--accent); outline: none; }
+.gin:focus { border-color: var(--accent-text); outline: none; }
 .key { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
 .key .field { flex: 1; min-width: 220px; }
 .notify p { margin: 0; }
@@ -289,7 +289,7 @@ tr:last-child td { border-bottom: 0; }
 td.name { font-weight: 550; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 td.cond { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
 td.empty { text-align: center; white-space: normal; }
-.act { color: var(--accent); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.act { color: var(--accent-text); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .ops-in { display: flex; gap: 2px; align-items: center; }
 .switch { width: 32px; height: 18px; border-radius: 999px; background: var(--line); border: 0; position: relative; cursor: pointer; vertical-align: middle; flex: none; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); transition: left 0.15s; }

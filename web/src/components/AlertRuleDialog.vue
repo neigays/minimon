@@ -106,7 +106,7 @@ async function submit() {
 .dlg form { display: grid; gap: 12px; }
 .dlg h3 { margin: 0; font-size: 15px; }
 .dlg select { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
-.dlg select:focus, .dlg input:focus { border-color: var(--accent); outline: none; }
+.dlg select:focus, .dlg input:focus { border-color: var(--accent-text); outline: none; }
 .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .chk label { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
 .nodes { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; display: grid; gap: 6px; max-height: 160px; overflow: auto; margin: 0; }

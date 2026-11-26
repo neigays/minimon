@@ -67,6 +67,9 @@ const offlineText = computed(() => {
         <span>在线 <b>{{ formatUptime(r.uptime_secs) }}</b></span>
       </div>
     </template>
+    <div v-else-if="mode === 'waiting'" class="foot">
+      <span>已连接，等待首次上报…</span>
+    </div>
     <div v-else-if="mode === 'stale'" class="foot">
       <span>{{ offlineText }}</span>
     </div>

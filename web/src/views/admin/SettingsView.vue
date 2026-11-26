@@ -145,7 +145,7 @@ async function submitPw() {
 .title { font-weight: 600; }
 .small { font-size: 12px; }
 .card select { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
-.card select:focus { border-color: var(--accent); outline: none; }
+.card select:focus { border-color: var(--accent-text); outline: none; }
 .ok { color: var(--ok); font-size: 13px; }
 .switch { flex: none; width: 32px; height: 18px; border-radius: 999px; background: var(--line); border: 0; position: relative; cursor: pointer; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); transition: left 0.15s; }
