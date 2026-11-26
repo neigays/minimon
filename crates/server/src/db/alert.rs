@@ -227,7 +227,7 @@ impl Db {
                         s.key.rule_id,
                         s.key.node_id,
                         s.key.task_id,
-                        if s.firing { "firing" } else { "pending" },
+                        if s.firing { "firing" } else { "ok" },
                         s.since_ms,
                         s.fired_ms,
                         i64::from(s.notified),
@@ -541,5 +541,23 @@ mod tests {
         assert_eq!(db.sendkey().unwrap().as_deref(), Some("SCT1tAbc"));
         db.set_sendkey(None).unwrap();
         assert_eq!(db.sendkey().unwrap(), None);
+    }
+
+    #[test]
+    fn non_firing_state_roundtrips_as_ok() {
+        let db = Db::open_in_memory().unwrap();
+        let mut s = state(7);
+        s.firing = false;
+        s.last_notified_ms = Some(123);
+        db.apply_alert_effects(std::slice::from_ref(&s), &[], &[])
+            .unwrap();
+        let got = db.load_alert_states().unwrap();
+        assert!(!got[0].firing);
+        assert_eq!(got[0].last_notified_ms, Some(123));
+        let status: String = db
+            .raw_conn_for_test()
+            .query_row("SELECT status FROM alert_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "ok");
     }
 }

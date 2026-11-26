@@ -175,7 +175,7 @@ pub struct AlertKey {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StateRow {
     pub key: AlertKey,
-    /// false = pending，true = firing。
+    /// false = 非 firing（存为 ok：恢复后保留，仅为保存 last_notified_ms）。
     pub firing: bool,
     pub since_ms: i64,
     pub fired_ms: Option<i64>,
