@@ -88,7 +88,7 @@ impl Snapshot {
 }
 
 /// 合并库里与最近上报的时间；不得晚于服务器当前时间（agent 时钟超前时不外泄未来时间）。
-fn merge_last_seen(db: Option<i64>, report: Option<i64>, now: i64) -> Option<i64> {
+pub(crate) fn merge_last_seen(db: Option<i64>, report: Option<i64>, now: i64) -> Option<i64> {
     let merged = match (db, report) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),

@@ -85,11 +85,15 @@ pub async fn serve(
 const SESSION_DRAIN: Duration = Duration::from_secs(5);
 const HTTP_DRAIN: Duration = Duration::from_secs(10);
 const ROLLUP_DRAIN: Duration = Duration::from_secs(10);
+const ALERT_DRAIN: Duration = Duration::from_secs(5);
+/// 评估间隔下限（防止配置为 0 时 interval panic）。
+const MIN_ALERT_TICK_MS: u64 = 100;
 
 /// 在已绑定的 listener 上提供服务（集成测试可绑定端口 0）。
 ///
 /// 关停顺序：信号到达 -> 通知 WS 会话（发 Close 并退出）-> axum 优雅停止
-/// -> 等待 WS 会话结束（有上限）-> flush 并回收入库线程 -> 等待 rollup 任务。每一步都有上限。
+/// -> 等待 WS 会话结束（有上限）-> flush 并回收入库线程 -> 等待 rollup 任务
+/// -> 等待告警评估任务与通知队列（未发出的通知丢弃并记日志）。每一步都有上限。
 pub async fn serve_on(
     listener: tokio::net::TcpListener,
     state: AppState,
@@ -97,6 +101,15 @@ pub async fn serve_on(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let rollup = rollup::spawn(state.clone(), state.shutdown_rx());
+    let (queue, notify) = notify::NotifyQueue::spawn(
+        state.db.clone(),
+        state.shutdown_rx(),
+        alert::runtime::NOTIFY_WINDOW,
+        alert::runtime::NOTIFY_RETRY,
+        notify::serverchan_factory(),
+    );
+    let tick = Duration::from_millis(state.cfg.alert_tick_ms.max(MIN_ALERT_TICK_MS));
+    let alerts = alert::runtime::spawn(state.clone(), queue, state.shutdown_rx(), tick);
     let mut stopping = state.shutdown_rx();
     let sig_state = state.clone();
     let signal = async move {
@@ -133,6 +146,12 @@ pub async fn serve_on(
     }
     if tokio::time::timeout(ROLLUP_DRAIN, rollup).await.is_err() {
         tracing::warn!("rollup 任务未在时限内结束");
+    }
+    if tokio::time::timeout(ALERT_DRAIN, alerts).await.is_err() {
+        tracing::warn!("告警评估任务未在时限内结束");
+    }
+    if tokio::time::timeout(ALERT_DRAIN, notify).await.is_err() {
+        tracing::warn!("通知队列未在时限内结束");
     }
     served
 }

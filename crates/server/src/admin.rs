@@ -274,6 +274,9 @@ async fn remove(
     // 先踢掉会话（之后不再有新上报入队），再冲刷已入队的上报，最后删库。
     state.registry().revoke(id);
     state.flush_ingest().await;
+    // 暂停告警评估直到节点缓存刷新、引擎状态清除：期间不会有含该节点的旧快照
+    // 把状态写回内存或库（SQLite 会复用 id，新节点不能继承）。
+    let alert_pause = state.alert().pause().await;
     let db = state.db.clone();
     if !blocking(move || db.delete_node(id)).await? {
         return Err(ApiError::not_found(MSG_NO_NODE));
@@ -291,6 +294,8 @@ async fn remove(
     if let Err(e) = state.reload_nodes().await {
         tracing::error!(error = %e, "删除节点后刷新缓存失败");
     }
+    state.alert().forget_node(id);
+    drop(alert_pause);
     if let Err(e) = state.reload_probe_tasks().await {
         tracing::error!(error = %e, "删除节点后刷新探测任务缓存失败");
     }

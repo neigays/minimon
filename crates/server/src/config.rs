@@ -33,6 +33,8 @@ pub struct ServerConfig {
     pub retention_15m_days: u32,
     pub retention_probe_raw_hours: u32,
     pub retention_probe_5m_days: u32,
+    /// 告警评估间隔（毫秒）。不写入示例配置，仅供测试缩短。
+    pub alert_tick_ms: u64,
 }
 
 impl Default for ServerConfig {
@@ -48,6 +50,7 @@ impl Default for ServerConfig {
             retention_15m_days: 90,
             retention_probe_raw_hours: 24,
             retention_probe_5m_days: 30,
+            alert_tick_ms: 10_000,
         }
     }
 }

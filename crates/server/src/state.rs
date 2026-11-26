@@ -48,6 +48,8 @@ pub struct AppState {
     pub(crate) login_limiter: Arc<crate::auth::LoginLimiter>,
     /// 限制并发 argon2 哈希 / 校验数（每个约 19 MiB）。
     pub(crate) hash_gate: Arc<tokio::sync::Semaphore>,
+    /// 告警引擎与评估串行锁；启动时从库恢复。评估任务与通知队列由 `serve_on` 启动。
+    alert: Arc<crate::alert::runtime::AlertShared>,
 }
 
 fn default_tz() -> Tz {
@@ -89,6 +91,7 @@ impl AppState {
                 default_tz()
             }),
         };
+        let alert = Arc::new(crate::alert::runtime::AlertShared::load(&db)?);
         let (ingest, join) =
             IngestHandle::spawn(db.clone(), DEFAULT_FLUSH_EVERY, DEFAULT_MAX_BATCH)?;
         let state = AppState {
@@ -109,6 +112,7 @@ impl AppState {
             sessions: Arc::default(),
             login_limiter: Arc::default(),
             hash_gate: Arc::new(tokio::sync::Semaphore::new(HASH_CONCURRENCY)),
+            alert,
         };
         Ok((state, join))
     }
@@ -226,6 +230,11 @@ impl AppState {
             }
         };
         tokio::time::timeout(max, wait).await.is_ok()
+    }
+
+    /// 告警运行时共享状态。
+    pub fn alert(&self) -> &crate::alert::runtime::AlertShared {
+        &self.alert
     }
 
     pub fn registry(&self) -> &Registry {

@@ -42,11 +42,12 @@ pub(crate) fn spawn(state: AppState, mut shutdown: watch::Receiver<bool>) -> Joi
                     let pruned = db.prune_probes(now, probe_raw_ms, probe_5m_ms)?;
                     Ok::<_, crate::db::DbError>((rolled, pruned))
                 })();
-                (metrics, probes)
+                let alerts = db.prune_alerts(now);
+                (metrics, probes, alerts)
             })
             .await;
             match round {
-                Ok((metrics, probes)) => {
+                Ok((metrics, probes, alerts)) => {
                     match metrics {
                         Ok((stats, pruned, sessions)) => tracing::debug!(
                             m1 = stats.m1,
@@ -62,6 +63,10 @@ pub(crate) fn spawn(state: AppState, mut shutdown: watch::Receiver<bool>) -> Joi
                             tracing::debug!(rolled, pruned, "探测 rollup 完成")
                         }
                         Err(e) => tracing::error!(error = %e, "探测 rollup 失败"),
+                    }
+                    match alerts {
+                        Ok(pruned) => tracing::debug!(pruned, "告警事件与标记清理完成"),
+                        Err(e) => tracing::error!(error = %e, "告警事件与标记清理失败"),
                     }
                 }
                 Err(e) => tracing::error!(error = %e, "rollup 任务异常"),

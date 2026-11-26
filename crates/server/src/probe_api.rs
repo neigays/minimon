@@ -347,6 +347,10 @@ async fn remove(
     let hit = old.and_then(|t| affected(t.all_nodes, &t.node_ids, false, &[]));
     refresh(&state, hit, true).await?;
     state.forget_probe_task(id);
+    // 绑定该任务的规则状态在下一轮评估时静默清除；这里重载规则让引擎与库保持一致。
+    if let Err(e) = state.alert().reload_rules(&state.db).await {
+        tracing::error!(task_id = id, error = %e, "删除探测任务后重载告警规则失败");
+    }
     let db = state.db.clone();
     if let Err(e) = blocking(move || db.purge_probe_task_data(id)).await {
         tracing::error!(task_id = id, "删除探测任务后清理数据失败: {e:?}");

@@ -1,5 +1,6 @@
 //! 探测任务内存缓存与按节点筛选。
 
+use crate::alert::metric::ProbeSample;
 use crate::db::{DbError, ProbeTaskRow};
 use crate::state::{AppState, LiveEvent};
 use minimon_common::protocol::{ProbeResult, ProbeTask};
@@ -131,6 +132,24 @@ impl AppState {
         }
         self.ingest.push_probe(node_id, r);
         true
+    }
+
+    /// 每个 (node_id, task_id) 的最新探测样本（告警评估用）。
+    pub(crate) fn latest_samples(&self) -> HashMap<(i64, i64), ProbeSample> {
+        self.probe
+            .latest
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(k, l)| {
+                let s = ProbeSample {
+                    ts_ms: l.ts_ms,
+                    avg_ms: l.avg_ms,
+                    loss: l.loss,
+                };
+                (*k, s)
+            })
+            .collect()
     }
 
     /// 任务被删除：清它的最新结果。
