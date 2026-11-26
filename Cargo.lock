@@ -897,7 +897,7 @@ dependencies = [
 
 [[package]]
 name = "minimon-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "minimon-common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "minimon-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
