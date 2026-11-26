@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, ApiError } from '../../api'
 import { agentCommand, httpBase, installCommand, wsBase } from '../../agentCmd'
 import ConfirmButton from '../../components/ConfirmButton.vue'
@@ -9,6 +9,7 @@ import { statusOf } from '../../status'
 import { MODE_LABELS, type TrafficMode } from '../../traffic'
 import { billingPatch, blankForm, formFromNode, infoPatch } from '../../nodeForm'
 import { flagEmoji } from '../../flag'
+import { menuPlacement } from '../../menu'
 import TagList from '../../components/TagList.vue'
 import { previewTags } from '../../tags'
 
@@ -79,6 +80,33 @@ function toggleHidden(n: AdminNode) {
 function remove(n: AdminNode) {
   void run(() => api('DELETE', `/api/admin/nodes/${n.id}`))
 }
+
+// ---------- 「更多」菜单：fixed 定位，点外面 / Esc / 滚动 / 操作后关闭，同时只开一个 ----------
+const menu = ref<{ id: number; style: Record<string, string> } | null>(null)
+function toggleMenu(n: AdminNode, e: MouseEvent) {
+  if (menu.value?.id === n.id) return void (menu.value = null)
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  menu.value = { id: n.id, style: menuPlacement(r, { width: window.innerWidth, height: window.innerHeight }, 130) }
+}
+const closeMenu = () => (menu.value = null)
+function onDocClick(e: MouseEvent) {
+  if (menu.value && !(e.target as HTMLElement | null)?.closest('.more')) closeMenu()
+}
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeMenu()
+}
+onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onKey)
+  window.addEventListener('scroll', closeMenu, true)
+  window.addEventListener('resize', closeMenu)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onKey)
+  window.removeEventListener('scroll', closeMenu, true)
+  window.removeEventListener('resize', closeMenu)
+})
 
 function toggleAlert(n: AdminNode) {
   void run(() => api('PATCH', `/api/admin/nodes/${n.id}`, { alert_offline: !n.alert_offline }))
@@ -171,7 +199,8 @@ function openForm(m: Mode, n: AdminNode | null) {
   seed = n ? formFromNode(n) : blankForm()
   form.value = { ...seed }
   formErr.value = ''
-  dlg.value?.showModal()
+  // 等本模式的字段渲染完再打开：dialog 的 autofocus 才会落在当前模式的第一个输入框上
+  void nextTick(() => dlg.value?.showModal())
 }
 function closeForm() {
   dlg.value?.close()
@@ -277,14 +306,14 @@ async function submitForm() {
               <button type="button" class="act" @click="openForm('info', n)">编辑信息</button>
               <button type="button" class="act" @click="openForm('billing', n)">账单</button>
               <button type="button" class="act" @click="openInstall(n, '')">安装命令</button>
-              <details class="more">
-                <summary class="act" :aria-label="`${n.name} 的更多操作`">更多</summary>
-                <div class="menu">
-                  <button type="button" class="act" :disabled="busy" @click="toggleAlert(n)">离线告警：{{ n.alert_offline ? '开' : '关' }}</button>
-                  <ConfirmButton label="重置 token" confirm-label="确认重置？" :disabled="busy" @confirm="resetToken(n)" />
-                  <ConfirmButton label="删除节点" confirm-label="确认删除？" danger :disabled="busy" @confirm="remove(n)" />
+              <span class="more">
+                <button type="button" class="act" :aria-expanded="menu?.id === n.id" aria-haspopup="menu" :aria-label="`${n.name} 的更多操作`" @click="toggleMenu(n, $event)">更多</button>
+                <div v-if="menu?.id === n.id" class="menu" role="menu" :style="menu.style">
+                  <button type="button" class="act" role="menuitem" :disabled="busy" @click="closeMenu(); toggleAlert(n)">离线告警：{{ n.alert_offline ? '开' : '关' }}</button>
+                  <ConfirmButton label="重置 token" confirm-label="确认重置？" :disabled="busy" @confirm="closeMenu(); resetToken(n)" />
+                  <ConfirmButton label="删除节点" confirm-label="确认删除？" danger :disabled="busy" @confirm="closeMenu(); remove(n)" />
                 </div>
-              </details>
+              </span>
             </td>
           </tr>
           <tr v-if="loaded && rows.length === 0"><td colspan="8" class="empty">还没有节点，点击右上角「新增节点」</td></tr>
@@ -343,9 +372,7 @@ async function submitForm() {
 .flag { font-size: 14px; }
 td.ip .v6 { font-size: 11px; color: var(--muted); }
 .more { position: relative; display: inline-block; }
-.more summary { list-style: none; display: inline-block; }
-.more summary::-webkit-details-marker { display: none; }
-.more .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px; display: grid; gap: 2px; min-width: 140px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); }
+.more .menu { z-index: 20; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px; display: grid; gap: 2px; min-width: 140px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); }
 .more .menu .act { text-align: left; }
 .chk-inline { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
 .mirror { flex: 1; min-width: 220px; }

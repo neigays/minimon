@@ -63,7 +63,7 @@ curl -fsSL https://<面板地址>/install.sh | sudo bash -s -- --server wss://<�
 脚本会从 GitHub Releases 下载对应平台的 agent、校验 SHA256、注册为 systemd（Linux）或 launchd（macOS）服务。
 
 - 国内机器下载慢：在命令末尾加 `--mirror <代理前缀>`
-- 升级：重新执行同一条命令
+- 升级：重新执行同一条命令。**先升级 server，再升级 agent**：新版 server 兼容旧 agent，但新版 agent 连旧版 server 会被拒绝（协议版本不兼容）
 - 卸载：`curl -fsSL https://<面板地址>/install.sh | sudo bash -s -- --uninstall`
 
 支持的平台：Linux x86_64 / aarch64（musl 静态链接）、macOS aarch64。
