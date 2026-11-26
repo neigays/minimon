@@ -9,6 +9,7 @@ EnvironmentFile=/etc/minimon/agent.env
 ExecStart=/usr/local/bin/minimon-agent
 Restart=always
 RestartSec=5
+TimeoutStopSec=10
 DynamicUser=yes
 NoNewPrivileges=yes
 # 免特权 ICMP（ping_group_range）不可用时退回 RAW 套接字，需要 CAP_NET_RAW；

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.minimon.agent</string>
+    <!-- launchd 不支持 EnvironmentFile：由 sh 读取 /etc/minimon/agent.env（权限 600），token 不写进 plist -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>set -a; . /etc/minimon/agent.env; exec /usr/local/bin/minimon-agent</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/minimon-agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/minimon-agent.log</string>
+</dict>
+</plist>
