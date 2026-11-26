@@ -9,6 +9,7 @@ mod error;
 mod history;
 mod ingest;
 mod live;
+pub mod notify;
 pub mod period;
 pub mod probe;
 mod probe_api;
