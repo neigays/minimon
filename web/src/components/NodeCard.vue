@@ -74,11 +74,11 @@ const offlineText = computed(() => {
 </template>
 
 <style scoped>
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 14px 12px; display: grid; gap: 10px; align-content: start; text-decoration: none; cursor: pointer; transition: border-color 0.2s; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); padding: 16px 16px 14px; display: grid; gap: 10px; align-content: start; text-decoration: none; cursor: pointer; transition: border-color 0.2s; min-width: 0; }
 .card:hover { border-color: var(--line-strong); }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-tags { margin-top: -2px; }
-.name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.name { font-size: 15px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pill { margin-left: auto; }
 .sub { color: var(--muted); font-size: 12px; margin-top: -6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .never { font-size: 12px; color: var(--muted); }

@@ -47,7 +47,7 @@ async function submit() {
 </template>
 
 <style scoped>
-.login { max-width: 360px; margin: 40px auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 28px 24px; display: grid; gap: 14px; }
+.login { max-width: 360px; margin: 40px auto; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); padding: 28px 24px; display: grid; gap: 14px; }
 h1 { margin: 0; font-size: 20px; }
 p { margin: 0; color: var(--muted); font-size: 13px; }
 </style>

@@ -48,7 +48,7 @@ defineExpose({ reload: () => load(true) })
 </template>
 
 <style scoped>
-.events { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
+.events { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); }
 .events li { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 9px 12px; border-bottom: 1px solid var(--line); }
 .events li:last-child { border-bottom: 0; }
 .time { color: var(--muted); font-size: 12px; }

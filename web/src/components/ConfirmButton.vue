@@ -28,7 +28,7 @@ onBeforeUnmount(() => clearTimeout(timer))
 </template>
 
 <style scoped>
-.act { color: var(--c1); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.act { color: var(--accent); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .act.danger { color: var(--bad); }
 .act.armed { background: var(--bad-soft); font-weight: 600; }
 .act:disabled { opacity: 0.5; cursor: default; }

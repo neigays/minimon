@@ -184,7 +184,7 @@ watch(() => [props.ts, props.series, props.unit, props.max], refresh)
 </template>
 
 <style scoped>
-.chart { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 12px 6px; min-width: 0; position: relative; }
+.chart { background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); padding: 12px 12px 6px; min-width: 0; position: relative; }
 h3 { margin: 0 0 2px; font-size: 13px; font-weight: 600; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .now { margin-left: auto; font-weight: 500; color: var(--fg-2); font-size: 12px; }
 .legend { display: inline-flex; gap: 10px; font-size: 12px; color: var(--muted); font-weight: 400; }

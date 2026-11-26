@@ -136,8 +136,8 @@ async function submitPw() {
 
 <style scoped>
 .panel-head { margin-bottom: 12px; }
-.panel-head h2 { font-size: 16px; margin: 0; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; margin-bottom: 16px; display: grid; gap: 12px; }
+.panel-head h2 { font-size: 18px; font-weight: 650; margin: 0; }
+.card { background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); padding: 16px; margin-bottom: 16px; display: grid; gap: 12px; }
 .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
 .cols .card { margin-bottom: 0; }
 .row { display: flex; gap: 16px; align-items: center; }
@@ -145,7 +145,7 @@ async function submitPw() {
 .title { font-weight: 600; }
 .small { font-size: 12px; }
 .card select { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
-.card select:focus { border-color: var(--c1); outline: none; }
+.card select:focus { border-color: var(--accent); outline: none; }
 .ok { color: var(--ok); font-size: 13px; }
 .switch { flex: none; width: 32px; height: 18px; border-radius: 999px; background: var(--line); border: 0; position: relative; cursor: pointer; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); transition: left 0.15s; }

@@ -241,12 +241,12 @@ const sortedNodes = computed(() => [...nodes.value].sort((a, b) => a.sort - b.so
 
 <style scoped>
 .panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-.panel-head h2 { font-size: 16px; margin: 0; }
+.panel-head h2 { font-size: 18px; font-weight: 650; margin: 0; }
 .spacer { flex: 1; }
 .small { font-size: 12px; }
 .page-err { margin-bottom: 10px; }
 .ok { color: var(--ok); font-size: 13px; }
-.tpl { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 16px; margin-bottom: 14px; }
+.tpl { background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); padding: 12px 16px; margin-bottom: 14px; }
 .tpl-sum { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
 .tpl-sum::-webkit-details-marker { display: none; }
 .caret { display: inline-block; transition: transform 0.15s; color: var(--muted); }
@@ -254,7 +254,7 @@ const sortedNodes = computed(() => [...nodes.value].sort((a, b) => a.sort - b.so
 .tpl-body { display: grid; gap: 10px; margin-top: 10px; }
 .tpl-head { display: grid; gap: 2px; }
 .tpl-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 10px; align-items: end; }
-.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); }
 table { width: 100%; border-collapse: collapse; min-width: 720px; }
 th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th { font-size: 12px; color: var(--muted); font-weight: 500; background: var(--surface-2); }
@@ -263,7 +263,7 @@ td.name { font-weight: 550; max-width: 160px; overflow: hidden; text-overflow: e
 td.target { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 td.scope { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 td.empty { text-align: center; white-space: normal; }
-.act { color: var(--c1); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.act { color: var(--accent); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .ops-in { display: flex; gap: 2px; align-items: center; }
 .switch { width: 32px; height: 18px; border-radius: 999px; background: var(--line); border: 0; position: relative; cursor: pointer; vertical-align: middle; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); transition: left 0.15s; }
@@ -277,7 +277,7 @@ td.empty { text-align: center; white-space: normal; }
 .dlg form { display: grid; gap: 12px; }
 .dlg h3 { margin: 0; font-size: 15px; }
 .dlg select { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
-.dlg select:focus, .dlg input:focus { border-color: var(--c1); outline: none; }
+.dlg select:focus, .dlg input:focus { border-color: var(--accent); outline: none; }
 .trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .trio label { font-size: 12px; }
 .chk label { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }

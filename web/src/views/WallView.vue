@@ -60,17 +60,25 @@ const summary = computed(() => {
 </template>
 
 <style scoped>
-.summary { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; padding: 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); margin-bottom: 16px; }
+.summary { display: flex; flex-wrap: wrap; gap: 10px 0; align-items: baseline; padding: 14px 4px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); margin-bottom: 16px; }
 .k { color: var(--muted); font-size: 12px; margin-right: 6px; }
 .k.tail { margin: 0 0 0 2px; }
-.v { font-size: 16px; font-weight: 600; }
+.summary > span { padding: 0 20px; }
+.summary > span + span { border-left: 1px solid var(--line); }
+@media (max-width: 640px) {
+  .summary { display: grid; grid-template-columns: repeat(3, auto); justify-content: start; gap: 8px 0; padding: 12px 0; }
+  .summary > span { padding: 0 14px; }
+  .summary > span + span { border-left: 0; }
+  .summary > span:nth-child(n + 4) { grid-column: span 3; }
+}
+.v { font-size: 20px; font-weight: 650; }
 .v.bad { color: var(--bad); }
 .v.warn { color: var(--warn); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
 .chip { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 3px 12px; cursor: pointer; color: var(--fg-2); font-size: 13px; transition: background 0.15s, border-color 0.15s; }
 .chip:hover { border-color: var(--line-strong); }
-.chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .n { color: var(--muted); margin-left: 4px; }
 .chip[aria-pressed="true"] .n { color: inherit; opacity: 0.7; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); gap: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); gap: 14px; }
 </style>

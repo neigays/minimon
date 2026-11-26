@@ -8,6 +8,8 @@
   --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --r: 10px;
+  --accent: #3b82f6; --accent-fg: #ffffff;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 1px 3px rgba(0, 0, 0, 0.3);
   color-scheme: dark;
 }
 @media (prefers-color-scheme: light) {
@@ -17,6 +19,8 @@
     --ok: #15803d; --ok-soft: rgba(22, 163, 74, 0.12); --bad: #dc2626; --bad-soft: rgba(220, 38, 38, 0.1);
     --warn: #b45309; --warn-soft: rgba(217, 119, 6, 0.12);
     --c1: #0284c7; --c2: #7c3aed; --c3: #c2410c; --c4: #be185d; --grid: rgba(15, 23, 42, 0.08);
+    --accent: #2563eb; --accent-fg: #ffffff;
+    --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 2px 8px rgba(15, 23, 42, 0.04);
     color-scheme: light;
   }
 }
@@ -26,5 +30,7 @@
   --ok: #15803d; --ok-soft: rgba(22, 163, 74, 0.12); --bad: #dc2626; --bad-soft: rgba(220, 38, 38, 0.1);
   --warn: #b45309; --warn-soft: rgba(217, 119, 6, 0.12);
   --c1: #0284c7; --c2: #7c3aed; --c3: #c2410c; --c4: #be185d; --grid: rgba(15, 23, 42, 0.08);
+  --accent: #2563eb; --accent-fg: #ffffff;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 2px 8px rgba(15, 23, 42, 0.04);
   color-scheme: light;
 }
