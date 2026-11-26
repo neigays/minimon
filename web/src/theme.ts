@@ -22,16 +22,33 @@ function systemTheme(): Theme {
   }
 }
 
+/** 顶栏颜色（--surface），用于浏览器 / 独立 App 的状态栏与标题栏。 */
+const SURFACE: Record<Theme, string> = { light: '#ffffff', dark: '#1b2336' }
+
+/** 两个 theme-color meta（按系统浅 / 深色）应取的值：手动选过主题时两者都跟随手动选择。 */
+export function themeColors(override: Theme | null): { light: string; dark: string } {
+  return override ? { light: SURFACE[override], dark: SURFACE[override] } : { light: SURFACE.light, dark: SURFACE.dark }
+}
+
+function applyThemeColor(override: Theme | null): void {
+  const c = themeColors(override)
+  document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]').forEach((m) => {
+    m.content = m.media.includes('dark') ? c.dark : c.light
+  })
+}
+
 export function initTheme(): void {
   const s = stored()
   if (s) document.documentElement.dataset.theme = s
   theme.value = s ?? systemTheme()
+  applyThemeColor(s)
 }
 
 export function toggleTheme(): void {
   const next: Theme = theme.value === 'dark' ? 'light' : 'dark'
   theme.value = next
   document.documentElement.dataset.theme = next
+  applyThemeColor(next)
   try {
     localStorage.setItem(KEY, next)
   } catch {
