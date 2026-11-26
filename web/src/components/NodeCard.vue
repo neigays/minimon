@@ -10,12 +10,14 @@ import ProbeRow from './ProbeRow.vue'
 import StatusPill from './StatusPill.vue'
 import TagList from './TagList.vue'
 import Flag from './Flag.vue'
+import { cardMode } from '../cardMode'
 
 const { user } = useAuth()
 const props = defineProps<{ node: PublicNode; connected: boolean; now: number }>()
 
 const status = computed(() => statusOf(props.node, props.connected))
 const off = computed(() => status.value === 'offline')
+const mode = computed(() => cardMode(props.node, props.connected))
 const r = computed(() => props.node.latest)
 const sub = computed(() => {
   const n = props.node
@@ -40,12 +42,13 @@ const offlineText = computed(() => {
       <StatusPill class="pill" :status="status" />
     </div>
     <TagList v-if="node.tags?.length" class="card-tags" :tags="node.tags" />
-    <div class="sub">{{ sub }}</div>
-    <template v-if="r">
+    <div v-if="mode === 'never'" class="never">尚未连接 · 安装 agent 后显示数据</div>
+    <div v-else class="sub">{{ sub }}</div>
+    <template v-if="mode !== 'never' && r">
       <Meter label="CPU" :pct="r.cpu" :value="r.cpu.toFixed(0) + '%'" />
       <Meter label="内存" :pct="usagePct(r.mem_used, memTotal)" :value="memTotal ? `${formatShort(r.mem_used)} / ${formatShort(memTotal)}` : formatShort(r.mem_used)" />
       <Meter label="磁盘" :pct="usagePct(r.disk_used, diskTotal)" :value="diskTotal ? `${formatShort(r.disk_used)} / ${formatShort(diskTotal)}` : formatShort(r.disk_used)" />
-      <ProbeRow v-if="node.probes?.length" :probes="node.probes" />
+      <ProbeRow v-if="mode === 'live' && node.probes?.length" :probes="node.probes" />
       <div v-if="tr || days !== null" class="adm">
         <template v-if="tr">
           <span class="tl">本月 <b class="num">{{ formatDecBytes(tr.used) }}</b><template v-if="tr.quota"> / {{ formatDecBytes(tr.quota) }}</template></span>
@@ -64,24 +67,21 @@ const offlineText = computed(() => {
         <span>在线 <b>{{ formatUptime(r.uptime_secs) }}</b></span>
       </div>
     </template>
-    <template v-else>
-      <ProbeRow v-if="node.probes?.length" :probes="node.probes" />
-      <div class="foot">
-      <span>暂无数据</span>
-      <span v-if="off">{{ offlineText }}</span>
-      </div>
-    </template>
+    <div v-else-if="mode === 'stale'" class="foot">
+      <span>{{ offlineText }}</span>
+    </div>
   </RouterLink>
 </template>
 
 <style scoped>
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 14px 12px; display: grid; gap: 10px; text-decoration: none; cursor: pointer; transition: border-color 0.2s; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 14px 12px; display: grid; gap: 10px; align-content: start; text-decoration: none; cursor: pointer; transition: border-color 0.2s; min-width: 0; }
 .card:hover { border-color: var(--line-strong); }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-tags { margin-top: -2px; }
 .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pill { margin-left: auto; }
 .sub { color: var(--muted); font-size: 12px; margin-top: -6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.never { font-size: 12px; color: var(--muted); }
 .foot { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 9px; }
 .foot b { color: var(--fg-2); font-weight: 500; }
 .adm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; color: var(--muted); }

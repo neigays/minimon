@@ -3,26 +3,19 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import HistoryChart from '../components/HistoryChart.vue'
 import StatusPill from '../components/StatusPill.vue'
-import { useAuth } from '../auth'
-import { formatBytes, formatUptime } from '../format'
 import { buildCharts, fetchHistory, granularityNote, RANGES, toHistoryErr, type History, type HistoryErr, type Range } from '../history'
 import { useLive, type PublicNode } from '../live'
 import { statusOf } from '../status'
 import { buildProbeCharts, fetchProbeHistory, type ProbeHistory } from '../probe'
-import { api } from '../api'
 import TagList from '../components/TagList.vue'
 import Flag from '../components/Flag.vue'
-import { ipRows } from '../ip'
-import { expireLevel, expireText, formatDecBytes, formatPeriodDay, MODE_LABELS } from '../traffic'
 
-type Info = PublicNode & { hostname?: string | null; kernel?: string | null; agent_version?: string | null; ip?: string | null; ipv4?: string | null; ipv6?: string | null; note?: string }
 
 const route = useRoute()
-const { user } = useAuth()
 const { nodes, connected, loaded } = useLive()
 
 const id = computed(() => String(route.params.id))
-const node = computed(() => nodes.value.find((n) => String(n.id) === id.value) as Info | undefined)
+const node = computed(() => nodes.value.find((n) => String(n.id) === id.value) as PublicNode | undefined)
 const range = ref<Range>('1h')
 const hist = ref<History | null>(null)
 const probeHist = ref<ProbeHistory | null>(null)
@@ -99,61 +92,6 @@ const probeBuilt = computed(() => {
   return buildProbeCharts(h)
 })
 const status = computed(() => (node.value ? statusOf(node.value, connected.value) : 'offline'))
-const r = computed(() => node.value?.latest ?? null)
-const dash = (s: string | null | undefined) => (s ? s : '—')
-const pub = computed(() => {
-  const n = node.value
-  if (!n) return []
-  const disk = r.value?.disk_total || n.disk_total
-  return [
-    ['系统', [n.os, n.arch].filter(Boolean).join(' · ') || '—'],
-    ['CPU', n.cpu_model ? `${n.cpu_model}${n.cpu_cores ? ` · ${n.cpu_cores} 核` : ''}` : dash(null)],
-    ['内存', n.mem_total ? formatBytes(n.mem_total) : '—'],
-    ['磁盘', disk ? formatBytes(disk) : '—'],
-    ['虚拟化', dash(n.virtualization)],
-    ['在线时长', r.value && status.value !== 'offline' ? formatUptime(r.value.uptime_secs) : '离线'],
-  ]
-})
-const priv = computed(() => {
-  const n = node.value
-  if (!n || !user.value) return []
-  return [
-    ...ipRows(n),
-    ['主机名', dash(n.hostname)],
-    ['内核', dash(n.kernel)],
-    ['Agent 版本', dash(n.agent_version)],
-    ['备注', dash(n.note)],
-  ]
-})
-// 账期按服务器时区定义：向管理员设置接口取时区，取到之前先不按浏览器本地时间猜。
-const tz = ref<string | null>(null)
-watch(
-  user,
-  async (u) => {
-    if (!u || tz.value) return
-    try {
-      tz.value = (await api<{ timezone: string }>('GET', '/api/admin/settings')).timezone
-    } catch {
-      /* 时区取不到时账期按本地时间显示 */
-    }
-  },
-  { immediate: true },
-)
-const fmtDay = (ms: number) => formatPeriodDay(ms, tz.value)
-const adminExtra = computed<[string, string, string][]>(() => {
-  const n = node.value
-  if (!n || !user.value) return []
-  const out: [string, string, string][] = []
-  const t = n.traffic
-  if (t) {
-    out.push(['本月流量', `${formatDecBytes(t.used)}（↓${formatDecBytes(t.rx)} ↑${formatDecBytes(t.tx)}）`, ''])
-    out.push(['账期', `${fmtDay(t.period_start_ms)} – ${fmtDay(t.period_end_ms)}`, ''])
-    out.push(['月额度', t.quota ? formatDecBytes(t.quota) : '不限', ''])
-    out.push(['计费口径', MODE_LABELS[t.mode] ?? t.mode, ''])
-  }
-  out.push(['到期日', n.expire_date ? `${n.expire_date}${n.expire_days != null ? `（${expireText(n.expire_days)}）` : ''}` : '未设置', expireLevel(n.expire_days)])
-  return out
-})
 </script>
 
 <template>
@@ -176,12 +114,6 @@ const adminExtra = computed<[string, string, string][]>(() => {
       </div>
       <p v-else-if="!loaded" class="muted">加载中…</p>
 
-      <dl v-if="node" class="info">
-        <div v-for="[k, v] in pub" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></div>
-        <div v-for="[k, v] in priv" :key="k"><dt>{{ k }}<span class="lock">仅管理员</span></dt><dd class="num">{{ v }}</dd></div>
-        <div v-for="[k, v, lv] in adminExtra" :key="k"><dt>{{ k }}<span class="lock">仅管理员</span></dt><dd class="num" :class="lv">{{ v }}</dd></div>
-        <div v-if="!user"><dt>更多信息</dt><dd class="muted">IP、主机名等<RouterLink to="/login">登录后可见</RouterLink></dd></div>
-      </dl>
 
       <div class="toolbar">
         <div class="seg" role="group" aria-label="时间范围">
@@ -210,17 +142,10 @@ const adminExtra = computed<[string, string, string][]>(() => {
 .back:hover { color: var(--fg); }
 .d-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
 .d-head h1 { font-size: 22px; margin: 0; font-weight: 650; overflow-wrap: anywhere; }
-.info { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); background: var(--surface); border-top: 1px solid var(--line); border-left: 1px solid var(--line); border-radius: var(--r); overflow: hidden; margin: 0 0 18px; box-shadow: 0 0 0 1px var(--line); }
-.info > div { padding: 10px 14px; min-width: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.info dt { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
-.info dd { margin: 2px 0 0; overflow-wrap: anywhere; }
-.lock { font-size: 10px; color: var(--warn); border: 1px solid var(--warn-soft); background: var(--warn-soft); padding: 0 5px; border-radius: 4px; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: var(--surface); }
 .seg button { border: 0; background: transparent; padding: 4px 12px; border-radius: 6px; cursor: pointer; color: var(--muted); }
 .seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
-.info dd.hi { color: var(--warn); }
-.info dd.crit { color: var(--bad); }
 .gran { font-size: 12px; color: var(--muted); }
 .charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 12px; }
 </style>

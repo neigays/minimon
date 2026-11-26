@@ -44,7 +44,7 @@ const summary = computed(() => {
       <div class="summary">
         <span><span class="k">在线</span><span class="v num">{{ summary.online }}</span><span class="k tail">/ {{ summary.total }}</span></span>
         <span><span class="k">离线</span><span class="v num" :class="{ bad: summary.offline }">{{ summary.offline }}</span></span>
-        <span><span class="k">负载高</span><span class="v num" :class="{ warn: summary.busy }">{{ summary.busy }}</span></span>
+        <span title="CPU、内存或磁盘任一 ≥ 90% 的在线节点"><span class="k">高负载</span><span class="v num" :class="{ warn: summary.busy }">{{ summary.busy }}</span></span>
         <span><span class="k">总下行</span><span class="v num">{{ formatRate(summary.rx) }}</span></span>
         <span><span class="k">总上行</span><span class="v num">{{ formatRate(summary.tx) }}</span></span>
       </div>
