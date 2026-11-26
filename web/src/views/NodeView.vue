@@ -12,9 +12,10 @@ import { buildProbeCharts, fetchProbeHistory, type ProbeHistory } from '../probe
 import { api } from '../api'
 import TagList from '../components/TagList.vue'
 import { flagEmoji } from '../flag'
+import { ipRows } from '../ip'
 import { expireLevel, expireText, formatDecBytes, formatPeriodDay, MODE_LABELS } from '../traffic'
 
-type Info = PublicNode & { hostname?: string | null; kernel?: string | null; agent_version?: string | null; ip?: string | null; note?: string }
+type Info = PublicNode & { hostname?: string | null; kernel?: string | null; agent_version?: string | null; ip?: string | null; ipv4?: string | null; ipv6?: string | null; note?: string }
 
 const route = useRoute()
 const { user } = useAuth()
@@ -117,7 +118,7 @@ const priv = computed(() => {
   const n = node.value
   if (!n || !user.value) return []
   return [
-    ['IP', dash(n.ip)],
+    ...ipRows(n),
     ['主机名', dash(n.hostname)],
     ['内核', dash(n.kernel)],
     ['Agent 版本', dash(n.agent_version)],
