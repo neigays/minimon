@@ -213,10 +213,10 @@ async function sendTest() {
             <td class="cond">{{ ruleSummary(r, taskName) }}</td>
             <td>{{ scope(r) }}</td>
             <td><button type="button" class="switch" role="switch" :aria-checked="r.enabled" :aria-label="`启用规则 ${r.name}`" :disabled="busy" @click="toggleRule(r)"></button></td>
-            <td class="ops">
+            <td class="ops"><div class="ops-in">
               <button type="button" class="act" @click="dlg?.open(r)">编辑</button>
               <ConfirmButton label="删除" confirm-label="确认删除？" danger :disabled="busy" @confirm="removeRule(r)" />
-            </td>
+            </div></td>
           </tr>
           <tr v-if="loaded && rules.length === 0"><td colspan="5" class="empty">还没有自定义规则，点击「新增规则」创建</td></tr>
         </tbody>
@@ -290,7 +290,7 @@ td.name { font-weight: 550; max-width: 160px; overflow: hidden; text-overflow: e
 td.cond { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
 td.empty { text-align: center; white-space: normal; }
 .act { color: var(--c1); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
-.ops { display: flex; gap: 2px; align-items: center; }
+.ops-in { display: flex; gap: 2px; align-items: center; }
 .switch { width: 32px; height: 18px; border-radius: 999px; background: var(--line); border: 0; position: relative; cursor: pointer; vertical-align: middle; flex: none; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); transition: left 0.15s; }
 .switch[aria-checked="true"] { background: var(--ok); }

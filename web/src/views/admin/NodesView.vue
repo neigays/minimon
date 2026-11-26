@@ -292,17 +292,17 @@ async function submitForm() {
               <button type="button" class="mv" :disabled="busy || i === rows.length - 1" :aria-label="`下移 ${n.name}`" @click="move(i, 1)">↓</button>
             </td>
             <td class="name">{{ n.name }}</td>
-            <td>{{ n.group || '—' }}</td>
-            <td><template v-if="n.region"><Flag :code="n.region" /> {{ n.region }}</template><template v-else>—</template></td>
-            <td><StatusPill :status="statusOf(n, connected)" /></td>
+            <td class="grp">{{ n.group || '—' }}</td>
+            <td class="reg"><template v-if="n.region"><Flag :code="n.region" /> {{ n.region }}</template><template v-else>—</template></td>
+            <td class="st"><StatusPill :status="statusOf(n, connected)" /></td>
             <td class="num ip">
               <div>{{ n.ipv4 || n.ip || '—' }}</div>
               <div v-if="n.ipv6" class="v6">{{ n.ipv6 }}</div>
             </td>
-            <td>
+            <td class="pub">
               <button type="button" class="switch" role="switch" :aria-checked="!n.hidden" :aria-label="`在公开页显示 ${n.name}`" :disabled="busy" @click="toggleHidden(n)"></button>
             </td>
-            <td class="ops">
+            <td class="ops"><div class="ops-in">
               <button type="button" class="act" @click="openForm('info', n)">编辑信息</button>
               <button type="button" class="act" @click="openForm('billing', n)">账单</button>
               <button type="button" class="act" @click="openInstall(n, '')">安装命令</button>
@@ -314,7 +314,7 @@ async function submitForm() {
                   <ConfirmButton label="删除节点" confirm-label="确认删除？" danger :disabled="busy" @confirm="closeMenu(); remove(n)" />
                 </div>
               </span>
-            </td>
+            </div></td>
           </tr>
           <tr v-if="loaded && rows.length === 0"><td colspan="8" class="empty">还没有节点，点击右上角「新增节点」</td></tr>
         </tbody>
@@ -392,7 +392,7 @@ td.empty { text-align: center; }
 .mv:hover:not(:disabled) { color: var(--fg); border-color: var(--line-strong); }
 .mv:disabled { opacity: 0.35; cursor: default; }
 .act { color: var(--c1); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
-.ops { display: flex; gap: 2px; align-items: center; }
+.ops-in { display: flex; gap: 2px; align-items: center; flex-wrap: wrap; }
 .switch { width: 32px; height: 18px; border-radius: 999px; background: var(--line); border: 0; position: relative; cursor: pointer; vertical-align: middle; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); transition: left 0.15s; }
 .switch[aria-checked="true"] { background: var(--ok); }
@@ -400,7 +400,7 @@ td.empty { text-align: center; }
 .switch:disabled { opacity: 0.6; cursor: default; }
 .drawer { margin-bottom: 14px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 16px; display: grid; gap: 12px; }
 .drawer h3 { margin: 0; font-size: 14px; }
-.code { margin: 0; font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; white-space: pre; color: var(--fg-2); user-select: all; }
+.code { margin: 0; font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; color: var(--fg-2); user-select: all; }
 .sub { margin: 0; font-size: 12px; color: var(--muted); }
 .hint { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: flex-start; }
 .hint svg { flex: none; margin-top: 2px; color: var(--warn); }
@@ -416,4 +416,23 @@ td.empty { text-align: center; }
 .dlg select, .dlg input[type=date] { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
 .dlg select:focus, .dlg input:focus { border-color: var(--c1); outline: none; }
 .dlg h3 { margin: 0; font-size: 15px; }
+/* 手机：表格改为每个节点一张卡片，无需横向滚动 */
+@media (max-width: 640px) {
+  .table-wrap { overflow: visible; background: none; border: 0; }
+  table { min-width: 0; }
+  thead { display: none; }
+  tbody { display: grid; gap: 10px; }
+  tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "sort name st" "reg grp ip" "pub ops ops"; gap: 8px 10px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; }
+  td { display: block; padding: 0; border: 0; white-space: normal; }
+  td.sort { grid-area: sort; }
+  td.name { grid-area: name; max-width: none; }
+  td.st { grid-area: st; }
+  td.reg { grid-area: reg; }
+  td.grp { grid-area: grp; color: var(--muted); }
+  td.ip { grid-area: ip; text-align: right; }
+  td.pub { grid-area: pub; }
+  td.ops { grid-area: ops; }
+  td.ops .ops-in { justify-content: flex-end; }
+  td.empty { grid-column: 1 / -1; }
+}
 </style>

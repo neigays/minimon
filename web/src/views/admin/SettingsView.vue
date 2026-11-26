@@ -104,6 +104,7 @@ async function submitPw() {
       <div v-if="settingErr" class="err" role="alert">{{ settingErr }}</div>
     </div>
 
+    <div class="cols">
     <form class="card pw" novalidate @submit.prevent="saveTz">
       <div class="title">时区</div>
       <div class="muted small">用于月流量账期与到期日计算，不读取服务器所在主机的时区。修改后立即按新规则重算。</div>
@@ -129,6 +130,7 @@ async function submitPw() {
       <div v-if="pwOk" class="ok" role="status">密码已修改</div>
       <div><button class="btn" type="submit" :disabled="pwBusy">{{ pwBusy ? '提交中…' : '修改密码' }}</button></div>
     </form>
+    </div>
   </section>
 </template>
 
@@ -136,7 +138,8 @@ async function submitPw() {
 .panel-head { margin-bottom: 12px; }
 .panel-head h2 { font-size: 16px; margin: 0; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; margin-bottom: 16px; display: grid; gap: 12px; }
-.pw { max-width: 420px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.cols .card { margin-bottom: 0; }
 .row { display: flex; gap: 16px; align-items: center; }
 .grow { flex: 1; min-width: 0; }
 .title { font-weight: 600; }

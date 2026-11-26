@@ -24,6 +24,9 @@ const PLACEHOLDER: Record<Kind, string> = { icmp: '如 1.1.1.1 或 example.com',
 
 const { nodes } = useLive()
 const tasks = ref<Task[]>([])
+// 三网模板：还没有任务时默认展开，已有任务时折叠成一行（只在首次加载时决定，之后随用户开合）。
+const tplOpen = ref(false)
+let tplDecided = false
 const loaded = ref(false)
 const pageErr = ref('')
 const busy = ref(false)
@@ -33,6 +36,10 @@ const scope = (t: Task) => (t.all_nodes ? '全部节点' : t.node_ids.length ? t
 
 async function reload() {
   tasks.value = await api<Task[]>('GET', '/api/admin/probes')
+  if (!tplDecided) {
+    tplOpen.value = tasks.value.length === 0
+    tplDecided = true
+  }
   loaded.value = true
 }
 onMounted(async () => {
@@ -165,9 +172,10 @@ const sortedNodes = computed(() => [...nodes.value].sort((a, b) => a.sort - b.so
     </div>
     <div v-if="pageErr" class="err page-err" role="alert">{{ pageErr }}</div>
 
-    <form class="tpl" novalidate @submit.prevent="createIsp">
+    <details class="tpl" :open="tplOpen" @toggle="tplOpen = ($event.target as HTMLDetailsElement).open">
+      <summary class="tpl-sum"><span class="caret" aria-hidden="true">▸</span>三网延迟模板<span v-if="!tplOpen" class="muted small">一键创建电信 / 联通 / 移动三条 ICMP 探测</span></summary>
+    <form class="tpl-body" novalidate @submit.prevent="createIsp">
       <div class="tpl-head">
-        <h3>三网延迟模板</h3>
         <span class="muted small">填写各运营商的测速 IP 或域名，例如当地电信/联通/移动的 DNS 或测速节点。留空的运营商不创建；任务为 ICMP，适用全部节点，显示在卡片上。</span>
       </div>
       <div class="tpl-grid">
@@ -179,6 +187,7 @@ const sortedNodes = computed(() => [...nodes.value].sort((a, b) => a.sort - b.so
       <div v-if="ispErr" class="err" role="alert">{{ ispErr }}</div>
       <div v-if="ispOk" class="ok" role="status">{{ ispOk }}</div>
     </form>
+    </details>
 
     <div class="table-wrap">
       <table>
@@ -191,10 +200,10 @@ const sortedNodes = computed(() => [...nodes.value].sort((a, b) => a.sort - b.so
             <td class="num">{{ t.interval_secs }} 秒</td>
             <td class="scope">{{ scope(t) }}</td>
             <td><button type="button" class="switch" role="switch" :aria-checked="t.show_on_card" :aria-label="`在卡片显示 ${t.name}`" :disabled="busy" @click="toggleCard(t)"></button></td>
-            <td class="ops">
+            <td class="ops"><div class="ops-in">
               <button type="button" class="act" @click="openForm(t)">编辑</button>
               <ConfirmButton label="删除" confirm-label="确认删除？" danger :disabled="busy" @confirm="remove(t)" />
-            </td>
+            </div></td>
           </tr>
           <tr v-if="loaded && tasks.length === 0"><td colspan="7" class="empty">还没有探测任务，可使用上方「三网延迟模板」或点击「新建任务」</td></tr>
         </tbody>
@@ -237,9 +246,13 @@ const sortedNodes = computed(() => [...nodes.value].sort((a, b) => a.sort - b.so
 .small { font-size: 12px; }
 .page-err { margin-bottom: 10px; }
 .ok { color: var(--ok); font-size: 13px; }
-.tpl { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; display: grid; gap: 10px; margin-bottom: 14px; }
+.tpl { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 16px; margin-bottom: 14px; }
+.tpl-sum { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+.tpl-sum::-webkit-details-marker { display: none; }
+.caret { display: inline-block; transition: transform 0.15s; color: var(--muted); }
+.tpl[open] .caret { transform: rotate(90deg); }
+.tpl-body { display: grid; gap: 10px; margin-top: 10px; }
 .tpl-head { display: grid; gap: 2px; }
-.tpl-head h3 { margin: 0; font-size: 14px; }
 .tpl-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 10px; align-items: end; }
 .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
 table { width: 100%; border-collapse: collapse; min-width: 720px; }
@@ -251,7 +264,7 @@ td.target { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 td.scope { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 td.empty { text-align: center; white-space: normal; }
 .act { color: var(--c1); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
-.ops { display: flex; gap: 2px; align-items: center; }
+.ops-in { display: flex; gap: 2px; align-items: center; }
 .switch { width: 32px; height: 18px; border-radius: 999px; background: var(--line); border: 0; position: relative; cursor: pointer; vertical-align: middle; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); transition: left 0.15s; }
 .switch[aria-checked="true"] { background: var(--ok); }
