@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh scripts/check-version.sh "${{ github.ref_name }}"
+
+  web:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  linux:
+    needs: web
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            suffix: linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            suffix: linux-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: 安装 zig 与 cargo-zigbuild
+        run: |
+          pip install ziglang==0.13.0
+          cargo install cargo-zigbuild --locked
+      - name: 构建
+        run: cargo zigbuild --release --locked -p minimon-agent -p minimon-server --target ${{ matrix.target }}
+      - name: 重命名并检查体积
+        run: |
+          mkdir out
+          for bin in agent server; do
+            cp "target/${{ matrix.target }}/release/minimon-$bin" "out/minimon-$bin-${{ matrix.suffix }}"
+          done
+          sh scripts/check-size.sh "out/minimon-agent-${{ matrix.suffix }}" 5242880
+          sh scripts/check-size.sh "out/minimon-server-${{ matrix.suffix }}" 20971520
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.suffix }}
+          path: out/*
+          if-no-files-found: error
+
+  macos:
+    needs: web
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p minimon-agent -p minimon-server --target aarch64-apple-darwin
+      - name: 重命名并检查体积
+        run: |
+          mkdir out
+          for bin in agent server; do
+            cp "target/aarch64-apple-darwin/release/minimon-$bin" "out/minimon-$bin-darwin-aarch64"
+          done
+          sh scripts/check-size.sh out/minimon-agent-darwin-aarch64 5242880
+          sh scripts/check-size.sh out/minimon-server-darwin-aarch64 20971520
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-darwin-aarch64
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    needs: [check, linux, macos]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: release
+          merge-multiple: true
+      - name: 生成校验文件
+        working-directory: release
+        run: sha256sum minimon-* > SHA256SUMS
+      - name: 创建 Release
+        working-directory: release
+        run: gh release create "${{ github.ref_name }}" minimon-* SHA256SUMS --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes
