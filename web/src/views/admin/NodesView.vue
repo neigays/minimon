@@ -119,6 +119,7 @@ const dlg = ref<HTMLDialogElement | null>(null)
 const editing = ref<AdminNode | null>(null) // null 表示新增
 let seed = blankForm()
 const form = ref(blankForm())
+const tagPreview = computed(() => previewTags(form.value.tags))
 const formErr = ref('')
 
 let opener: HTMLElement | null = null
@@ -247,7 +248,10 @@ async function submitForm() {
             <label for="f-tags">标签（多个标签用 ; 分隔，末尾加 &lt;颜色&gt; 指定颜色）</label>
             <input id="f-tags" v-model="form.tags" maxlength="400" placeholder="1Gbps<yellow>;CN2 GIA<red>" autocomplete="off" aria-describedby="f-tags-help" />
             <div id="f-tags-help" class="tag-help">
-              <TagList v-if="previewTags(form.tags).length" :tags="previewTags(form.tags)" />
+              <template v-if="tagPreview.length">
+                <TagList :tags="tagPreview" />
+                <div v-if="tagPreview.some((t) => t.invalid)" class="err-hint">标红的标签保存时会被拒绝</div>
+              </template>
               <span v-else class="muted">可用颜色：gray、red、orange、yellow、green、blue、purple、pink 等 Radix 色板名称，不写为 gray</span>
             </div>
           </div>
@@ -278,6 +282,7 @@ async function submitForm() {
 
 <style scoped>
 .tag-help { margin-top: 6px; font-size: 12px; min-height: 18px; }
+.err-hint { margin-top: 4px; color: var(--bad); }
 .panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .panel-head h2 { font-size: 16px; margin: 0; }
 .spacer { flex: 1; }

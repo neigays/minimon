@@ -29,12 +29,20 @@ pub enum TagError {
     BadChar,
     #[error("标签文字不能为空")]
     Empty,
+    #[error("颜色不能为空")]
+    EmptyColor,
 }
 
 fn parse_one(seg: &str) -> Result<Tag, TagError> {
     let (text, color) = match seg.strip_suffix('>').and_then(|s| s.rsplit_once('<')) {
         Some((text, c)) => {
+            if c.contains(['<', '>']) {
+                return Err(TagError::BadChar);
+            }
             let c = c.trim().to_ascii_lowercase();
+            if c.is_empty() {
+                return Err(TagError::EmptyColor);
+            }
             let color = COLORS
                 .iter()
                 .copied()
@@ -157,6 +165,13 @@ mod tests {
         assert_eq!(parse_tags("a<b<red>"), Err(TagError::BadChar));
         assert_eq!(parse_tags("a>b"), Err(TagError::BadChar));
         assert_eq!(parse_tags("a<red"), Err(TagError::BadChar));
+    }
+
+    #[test]
+    fn empty_and_broken_color_messages() {
+        assert_eq!(parse_tags("x<>"), Err(TagError::EmptyColor));
+        assert_eq!(parse_tags("x< >"), Err(TagError::EmptyColor));
+        assert_eq!(parse_tags("x<red>>"), Err(TagError::BadChar));
     }
 
     #[test]
