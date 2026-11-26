@@ -1,37 +1,44 @@
-//! 退出信号：Unix 下 SIGTERM（systemd stop）或 Ctrl-C 任一到达即完成。
+//! 退出信号：Unix 下 SIGTERM（systemd stop）或 SIGINT（Ctrl-C）任一到达即完成。
+//!
+//! 信号处理器在调用 [`shutdown_signal`] 时立即注册，而不是等到首次 poll：
+//! 启动阶段（采集器初始化等）收到的 SIGTERM 也能优雅退出，不会按默认动作被杀死。
 
-use std::future::pending;
+use std::future::{Future, pending};
 
-/// 等待 Ctrl-C；注册失败则记录警告并永不完成。
-async fn ctrl_c() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::warn!("监听 Ctrl-C 失败: {e}");
-        pending::<()>().await;
-    }
-}
-
-/// 等待 SIGTERM；注册失败则记录警告并永不完成。
-#[cfg(unix)]
-async fn sigterm() {
-    use tokio::signal::unix::{SignalKind, signal};
-    match signal(SignalKind::terminate()) {
-        Ok(mut s) => {
-            s.recv().await;
-        }
-        Err(e) => {
-            tracing::warn!("监听 SIGTERM 失败: {e}");
-            pending::<()>().await;
-        }
-    }
-}
-
-/// SIGTERM 或 Ctrl-C 任一到达即完成；非 Unix 仅 Ctrl-C。
-pub async fn shutdown_signal() {
+/// 立即注册退出信号并返回等待它的 future。必须在 tokio 运行时上下文中调用。
+pub fn shutdown_signal() -> impl Future<Output = ()> {
     #[cfg(unix)]
-    tokio::select! {
-        _ = ctrl_c() => {}
-        _ = sigterm() => {}
+    {
+        use tokio::signal::unix::{Signal, SignalKind, signal};
+        let reg = |kind: SignalKind, name: &'static str| -> Option<Signal> {
+            signal(kind)
+                .map_err(|e| tracing::warn!("监听 {name} 失败: {e}"))
+                .ok()
+        };
+        let term = reg(SignalKind::terminate(), "SIGTERM");
+        let int = reg(SignalKind::interrupt(), "SIGINT");
+        async move {
+            let wait = |s: Option<Signal>| async move {
+                match s {
+                    Some(mut s) => {
+                        s.recv().await;
+                    }
+                    None => pending::<()>().await,
+                }
+            };
+            tokio::select! {
+                _ = wait(term) => {}
+                _ = wait(int) => {}
+            }
+        }
     }
     #[cfg(not(unix))]
-    ctrl_c().await;
+    {
+        async {
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                tracing::warn!("监听 Ctrl-C 失败: {e}");
+                pending::<()>().await;
+            }
+        }
+    }
 }

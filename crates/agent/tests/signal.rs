@@ -19,11 +19,21 @@ fn sigterm_during_backoff_exits() {
             "--token",
             "t",
         ])
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_secs(1));
+    // 等到「agent 启动」日志再发信号：此时退出信号必须已注册（不靠固定 sleep 碰运气）。
+    use std::io::BufRead;
+    let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    loop {
+        let line = lines.next().expect("agent 未输出启动日志").unwrap();
+        if line.contains("agent 启动") {
+            break;
+        }
+    }
+    // 继续排空输出，避免管道写满阻塞子进程。
+    std::thread::spawn(move || for _ in lines {});
     let status = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
         .status()

@@ -9,10 +9,11 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let result = rt.block_on(minimon_agent::run(
-        cfg,
-        minimon_agent::signal::shutdown_signal(),
-    ));
+    // 在运行时内、任何初始化之前注册退出信号（需要运行时上下文）。
+    let result = rt.block_on(async {
+        let shutdown = minimon_agent::signal::shutdown_signal();
+        minimon_agent::run(cfg, shutdown).await
+    });
     // 阻塞中的 DNS 解析线程可能挂住，限时退出，避免超过 systemd 的 TimeoutStopSec
     rt.shutdown_timeout(std::time::Duration::from_secs(1));
     result
