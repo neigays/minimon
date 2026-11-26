@@ -25,10 +25,13 @@ pub async fn fallback(uri: Uri) -> Response {
     serve(INDEX).unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
 }
 
-/// 带 hash 的 `assets/` 下文件可永久缓存，其余（含 index.html）每次校验。
+/// 带 hash 的 `assets/` 下文件可永久缓存，`flags/` 缓存一天，其余（含 index.html）每次校验。
 fn cache_control(path: &str) -> &'static str {
     if path.starts_with("assets/") {
         "public, max-age=31536000, immutable"
+    } else if path.starts_with("flags/") {
+        // 国旗图片不带 hash，但几乎不变：缓存一天
+        "public, max-age=86400"
     } else {
         "no-cache"
     }
@@ -60,5 +63,6 @@ mod tests {
         assert_eq!(cache_control("favicon.ico"), "no-cache");
         assert_eq!(cache_control("assetsx/a.js"), "no-cache");
         assert_eq!(cache_control("sub/assets/a.js"), "no-cache");
+        assert_eq!(cache_control("flags/us.svg"), "public, max-age=86400");
     }
 }

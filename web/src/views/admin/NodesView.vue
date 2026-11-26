@@ -8,7 +8,7 @@ import { useLive, type PublicNode } from '../../live'
 import { statusOf } from '../../status'
 import { MODE_LABELS, type TrafficMode } from '../../traffic'
 import { billingPatch, blankForm, formFromNode, infoPatch } from '../../nodeForm'
-import { flagEmoji } from '../../flag'
+import Flag from '../../components/Flag.vue'
 import { menuPlacement } from '../../menu'
 import TagList from '../../components/TagList.vue'
 import { previewTags } from '../../tags'
@@ -293,7 +293,7 @@ async function submitForm() {
             </td>
             <td class="name">{{ n.name }}</td>
             <td>{{ n.group || '—' }}</td>
-            <td><template v-if="n.region"><span class="flag" aria-hidden="true">{{ flagEmoji(n.region) }}</span> {{ n.region }}</template><template v-else>—</template></td>
+            <td><template v-if="n.region"><Flag :code="n.region" /> {{ n.region }}</template><template v-else>—</template></td>
             <td><StatusPill :status="statusOf(n, connected)" /></td>
             <td class="num ip">
               <div>{{ n.ipv4 || n.ip || '—' }}</div>
@@ -369,7 +369,6 @@ async function submitForm() {
 </template>
 
 <style scoped>
-.flag { font-size: 14px; }
 td.ip .v6 { font-size: 11px; color: var(--muted); }
 .more { position: relative; display: inline-block; }
 .more .menu { z-index: 20; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px; display: grid; gap: 2px; min-width: 140px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); }
