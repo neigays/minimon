@@ -98,6 +98,11 @@ fn parse_uid_cases() {
 }
 
 #[test]
+fn new_builds_client_without_global_provider() {
+    assert!(ServerChan::new("sctp1tabc").is_ok());
+}
+
+#[test]
 fn bad_sendkey_is_config_error() {
     let Err(e) = ServerChan::new("abcdef") else {
         panic!("应当失败");

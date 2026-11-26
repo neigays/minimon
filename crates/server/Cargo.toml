@@ -13,8 +13,9 @@ clap = { version = "4.6.10", features = ["derive", "env"] }
 jiff = { version = "1.0.3", default-features = false, features = ["std", "tzdb-bundle-always"] }
 minimon-common = { workspace = true }
 rand = "0.10.4"
-# rustls-no-provider：不带 aws-lc-rs，由 notify 模块显式安装 ring 作为加密后端
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "form", "json"] }
+# reqwest 0.13 的 rustls 特性无条件依赖 rustls-platform-verifier（0.13.5 源码硬引用），
+# 因此用 0.12 的 manual-roots-no-provider：根证书与 ring 后端由 notify::serverchan 预先构造。
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-manual-roots-no-provider", "json"] }
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 rusqlite_migration = "2.9.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -25,6 +26,7 @@ sha2 = "0.11.1"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "net", "sync", "signal"] }
 toml = "1.2.3"
+webpki-roots = "0.26"
 tracing.workspace = true
 tracing-subscriber = "0.3.23"
 

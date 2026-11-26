@@ -1,6 +1,7 @@
 //! Server酱³：`POST https://<uid>.push.ft07.com/send/<sendkey>.send`。
 
 use super::{BoxFuture, Notifier, NotifyError, truncate_chars};
+use std::sync::Arc;
 use std::time::Duration;
 
 const TITLE_MAX_CHARS: usize = 32;
@@ -34,10 +35,20 @@ impl ServerChan {
     }
 
     fn build(url: String) -> Result<Self, NotifyError> {
-        // reqwest 以 rustls-no-provider 编译：这里确保 ring 已被安装为进程默认后端。
-        // 已安装时返回 Err，忽略即可。
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        // 静态 musl 部署没有系统根证书：内置 webpki-roots，加密后端显式用 ring，
+        // 不依赖进程级默认 provider。
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|_| NotifyError::Config("TLS 初始化失败"))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
         let client = reqwest::Client::builder()
+            .use_preconfigured_tls(tls)
             .timeout(TIMEOUT)
             .build()
             .map_err(|e| NotifyError::Http(e.without_url().to_string()))?;
