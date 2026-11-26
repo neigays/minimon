@@ -144,9 +144,14 @@ impl Engine {
     }
 
     /// 节点删除：丢弃其全部状态与提醒标记（库中由删除节点一并清理）。
+    /// 同时从规则的节点范围里移除该节点，与库中已删除的 `alert_rule_nodes` 保持一致，
+    /// 否则下次重载规则会把范围差异误判为语义变化而清掉其它节点的状态。
     pub fn forget_node(&mut self, id: i64) {
         self.tracked.retain(|k, _| k.node_id != id);
         self.marks.retain(|(n, _, _)| *n != id);
+        for r in &mut self.rules {
+            r.node_ids.retain(|n| *n != id);
+        }
     }
 
     /// 当前 firing 的状态。
@@ -800,5 +805,49 @@ pub(super) mod tests {
         assert!(e.active().is_empty());
         // 节点缺失的键不再评估
         assert!(e.evaluate(&snap(20_000, Vec::new())).is_empty());
+    }
+
+    #[test]
+    fn forget_node_prunes_rule_scope_keeps_other_nodes_firing() {
+        let mut r = rule(1, Metric::Cpu, 90.0);
+        r.all_nodes = false;
+        r.node_ids = vec![1, 2];
+        let mut e = engine(vec![r.clone()]);
+        e.evaluate(&snap(0, vec![node(1, Some(10.0)), node(2, Some(95.0))]));
+        let fx = e.evaluate(&snap(
+            10_000,
+            vec![node(1, Some(10.0)), node(2, Some(95.0))],
+        ));
+        assert_eq!(fx.notices.len(), 1);
+        e.forget_node(1);
+        // 库中已删除节点 1 的关联，重载得到 [2]
+        r.node_ids = vec![2];
+        assert!(e.set_rules(vec![r]).is_empty());
+        assert_eq!(
+            e.active().iter().map(|s| s.key).collect::<Vec<_>>(),
+            vec![rule_key(1, 2, 0)]
+        );
+    }
+
+    #[test]
+    fn forget_node_clears_marks() {
+        let mark = |node_id: i64, kind: MarkKind| Mark {
+            node_id,
+            kind,
+            mark: "1000:80".into(),
+        };
+        let mut e = Engine::new(
+            Vec::new(),
+            AlertSettings::default(),
+            Vec::new(),
+            vec![
+                mark(1, MarkKind::Traffic),
+                mark(1, MarkKind::Expire),
+                mark(2, MarkKind::Traffic),
+            ],
+        );
+        e.forget_node(1);
+        assert_eq!(e.marks.len(), 1);
+        assert!(e.marks.iter().all(|(n, _, _)| *n == 2));
     }
 }

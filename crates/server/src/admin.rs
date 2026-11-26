@@ -275,8 +275,8 @@ async fn remove(
     // 先踢掉会话（之后不再有新上报入队），再冲刷已入队的上报，最后删库。
     state.registry().revoke(id);
     state.flush_ingest().await;
-    // 暂停告警评估直到节点缓存刷新、引擎状态清除：期间不会有含该节点的旧快照
-    // 把状态写回内存或库（SQLite 会复用 id，新节点不能继承）。
+    // 暂停告警评估直到节点缓存刷新、引擎状态清除：防止进行中的一轮用含该节点的
+    // 旧快照把 alert_state 写回库（已删除节点的孤儿行）或把状态写回内存。
     let alert_pause = state.alert().pause().await;
     let db = state.db.clone();
     if !blocking(move || db.delete_node(id)).await? {
@@ -287,7 +287,7 @@ async fn remove(
     if let Err(e) = blocking(move || db.purge_probe_data_for_node(id)).await {
         tracing::error!(node_id = id, "删除节点后清理探测数据失败: {e:?}");
     }
-    // id 会被 SQLite 复用：内存里的最后已知上报必须一并清掉。
+    // 内存里的最后已知上报与探测缓存一并清掉，避免已删除节点残留在快照里。
     state.forget_node(id);
     state.forget_probe_node(id);
     // 再吊销一次：删除前刚通过认证、尚在握手的 agent 也要被拒绝。

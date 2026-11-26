@@ -338,17 +338,14 @@ async fn put_settings(
     let db = state.db.clone();
     blocking(move || {
         let cur = db.alert_settings()?;
-        db.set_alert_settings(&AlertSettings {
+        let settings = AlertSettings {
             offline_enabled: req.offline_enabled.unwrap_or(cur.offline_enabled),
             offline_grace_secs: req.offline_grace_secs.unwrap_or(cur.offline_grace_secs),
             traffic_enabled: req.traffic_enabled.unwrap_or(cur.traffic_enabled),
             expire_enabled: req.expire_enabled.unwrap_or(cur.expire_enabled),
-        })?;
-        match key.as_deref() {
-            Some("") => db.set_sendkey(None),
-            Some(k) => db.set_sendkey(Some(k)),
-            None => Ok(()),
-        }
+        };
+        let sendkey = key.as_deref().map(|k| Some(k).filter(|k| !k.is_empty()));
+        db.save_alert_settings(&settings, sendkey)
     })
     .await?;
     state

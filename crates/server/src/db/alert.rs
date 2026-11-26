@@ -359,15 +359,55 @@ impl Db {
         })
     }
 
-    pub fn set_alert_settings(&self, s: &AlertSettings) -> Result<(), DbError> {
+    /// 在同一事务里写入告警设置，并可选地修改 SendKey：
+    /// `Some(Some(k))` 设置、`Some(None)` 清除、`None` 不动。
+    pub fn save_alert_settings(
+        &self,
+        s: &AlertSettings,
+        sendkey: Option<Option<&str>>,
+    ) -> Result<(), DbError> {
         let b = |v: bool| if v { "1" } else { "0" };
-        self.set_setting("alert.offline_enabled", b(s.offline_enabled))?;
-        self.set_setting(
-            "alert.offline_grace_secs",
-            &s.offline_grace_secs.to_string(),
-        )?;
-        self.set_setting("alert.traffic_enabled", b(s.traffic_enabled))?;
-        self.set_setting("alert.expire_enabled", b(s.expire_enabled))
+        let grace = s.offline_grace_secs.to_string();
+        let pairs = [
+            ("alert.offline_enabled", b(s.offline_enabled)),
+            ("alert.offline_grace_secs", grace.as_str()),
+            ("alert.traffic_enabled", b(s.traffic_enabled)),
+            ("alert.expire_enabled", b(s.expire_enabled)),
+        ];
+        self.write(|c| {
+            let tx = c.transaction()?;
+            {
+                let mut up = tx.prepare(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                )?;
+                for (k, v) in pairs {
+                    up.execute(params![k, v])?;
+                }
+                match sendkey {
+                    Some(Some(k)) => {
+                        up.execute(params!["alert.sendkey", k])?;
+                    }
+                    Some(None) => {
+                        tx.execute("DELETE FROM settings WHERE key = 'alert.sendkey'", [])?;
+                    }
+                    None => {}
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// 启动时调用：上次运行遗留的 `pending` 事件（队列随关停丢弃，或入库后评估被取消）
+    /// 不会再被发送，统一标记为 `failed`。返回改动行数。
+    pub fn fail_pending_events(&self) -> Result<usize, DbError> {
+        self.write(|c| {
+            Ok(c.execute(
+                "UPDATE alert_events SET sent = ?1 WHERE sent = ?2",
+                params![SendStatus::Failed.as_str(), SendStatus::Pending.as_str()],
+            )?)
+        })
     }
 
     pub fn sendkey(&self) -> Result<Option<String>, DbError> {
@@ -534,13 +574,55 @@ mod tests {
             traffic_enabled: false,
             expire_enabled: true,
         };
-        db.set_alert_settings(&s).unwrap();
+        db.save_alert_settings(&s, None).unwrap();
         assert_eq!(db.alert_settings().unwrap(), s);
         assert_eq!(db.sendkey().unwrap(), None);
         db.set_sendkey(Some("SCT1tAbc")).unwrap();
         assert_eq!(db.sendkey().unwrap().as_deref(), Some("SCT1tAbc"));
         db.set_sendkey(None).unwrap();
         assert_eq!(db.sendkey().unwrap(), None);
+    }
+
+    #[test]
+    fn save_settings_with_sendkey_in_one_call() {
+        let db = Db::open_in_memory().unwrap();
+        let s = AlertSettings {
+            offline_grace_secs: 90,
+            ..AlertSettings::default()
+        };
+        db.save_alert_settings(&s, Some(Some("sctp1tAbc"))).unwrap();
+        assert_eq!(db.alert_settings().unwrap(), s);
+        assert_eq!(db.sendkey().unwrap().as_deref(), Some("sctp1tAbc"));
+        // 不动 SendKey
+        db.save_alert_settings(&AlertSettings::default(), None)
+            .unwrap();
+        assert_eq!(db.sendkey().unwrap().as_deref(), Some("sctp1tAbc"));
+        assert_eq!(db.alert_settings().unwrap(), AlertSettings::default());
+        // 清除
+        db.save_alert_settings(&s, Some(None)).unwrap();
+        assert_eq!(db.sendkey().unwrap(), None);
+        assert_eq!(db.alert_settings().unwrap(), s);
+    }
+
+    #[test]
+    fn fail_pending_events_marks_only_pending() {
+        let db = Db::open_in_memory().unwrap();
+        let ids = db.insert_alert_events(&[ev(1), ev(2), ev(3)]).unwrap();
+        db.set_events_sent(&ids[1..2], SendStatus::Ok).unwrap();
+        db.set_events_sent(&ids[2..3], SendStatus::Skipped).unwrap();
+        assert_eq!(db.fail_pending_events().unwrap(), 1);
+        let mut sent: Vec<(i64, SendStatus)> = db
+            .list_alert_events(None, 10)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.id, e.sent))
+            .collect();
+        sent.sort_by_key(|(id, _)| *id);
+        assert_eq!(
+            sent.into_iter().map(|(_, s)| s).collect::<Vec<_>>(),
+            vec![SendStatus::Failed, SendStatus::Ok, SendStatus::Skipped]
+        );
+        assert_eq!(db.fail_pending_events().unwrap(), 0);
     }
 
     #[test]

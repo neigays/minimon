@@ -38,7 +38,15 @@ async fn blocking<T: Send + 'static>(
 
 impl AlertShared {
     /// 从库恢复规则、设置、状态与提醒标记；`started_ms` 取当前时间。
+    /// 上次运行遗留的 `pending` 事件不会再发送，标记为 `failed`。
     pub(crate) fn load(db: &Db) -> Result<Self, DbError> {
+        let stranded = db.fail_pending_events()?;
+        if stranded > 0 {
+            tracing::warn!(
+                count = stranded,
+                "上次运行遗留未发送的告警事件，已标记为失败"
+            );
+        }
         let engine = Engine::new(
             db.list_alert_rules()?,
             db.alert_settings()?,
