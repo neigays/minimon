@@ -9,7 +9,7 @@ import { statusOf } from '../../status'
 import { MODE_LABELS, type TrafficMode } from '../../traffic'
 import { blankForm, diffPatch, formFromNode } from '../../nodeForm'
 
-type AdminNode = PublicNode & { hidden: boolean; ip: string | null; note: string; traffic_quota: number | null; traffic_reset_day: number; traffic_mode: TrafficMode }
+type AdminNode = PublicNode & { hidden: boolean; ip: string | null; note: string; traffic_quota: number | null; traffic_reset_day: number; traffic_mode: TrafficMode; alert_offline: boolean }
 
 const { nodes: liveNodes, connected } = useLive()
 const list = ref<AdminNode[]>([])
@@ -247,6 +247,7 @@ async function submitForm() {
             <div class="inline"><input id="f-exp" v-model="form.expire" type="date" /><button class="btn ghost" type="button" :disabled="!form.expire" @click="form.expire = ''">清空</button></div>
           </div>
         </template>
+        <div v-if="editing" class="chk"><label><input v-model="form.alertOffline" type="checkbox" /> 离线告警（节点断线时推送通知）</label></div>
         <div v-if="formErr" class="err" role="alert">{{ formErr }}</div>
         <div class="row end">
           <button class="btn ghost" type="button" @click="closeForm">取消</button>
@@ -290,6 +291,7 @@ td.empty { text-align: center; }
 .dlg::backdrop { background: rgba(0, 0, 0, 0.5); }
 .dlg form { display: grid; gap: 12px; }
 .dlg { max-height: calc(100vh - 32px); }
+.chk label { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
 .inline { display: flex; gap: 8px; }
 .inline input { flex: 1; min-width: 0; }
 .dlg select, .dlg input[type=date] { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }

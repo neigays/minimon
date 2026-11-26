@@ -24,3 +24,9 @@ test('node without config uses defaults', () => {
   const seed = formFromNode({ name: 'a', group: '', region: '', note: '' })
   expect(seed).toMatchObject({ quota: '', resetDay: '1', mode: 'sum', expire: '' })
 })
+test('alert_offline defaults to true and only that change is patched', () => {
+  const seed = formFromNode(node)
+  expect(seed.alertOffline).toBe(true)
+  expect(formFromNode({ ...node, alert_offline: false }).alertOffline).toBe(false)
+  expect(diffPatch(seed, { ...seed, alertOffline: false })).toEqual({ alert_offline: false })
+})

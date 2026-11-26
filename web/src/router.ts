@@ -36,6 +36,7 @@ export function createAppRouter(isAuthed: () => boolean, isLoginRequired: () => 
         children: [
           { path: '', component: () => import('./views/admin/NodesView.vue') },
           { path: 'probes', component: () => import('./views/admin/ProbesView.vue') },
+          { path: 'alerts', component: () => import('./views/admin/AlertsView.vue') },
           { path: 'settings', component: () => import('./views/admin/SettingsView.vue') },
         ],
       },

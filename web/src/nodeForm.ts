@@ -10,9 +10,10 @@ export interface NodeForm {
   resetDay: string
   mode: TrafficMode
   expire: string
+  alertOffline: boolean
 }
 
-export const blankForm = (): NodeForm => ({ name: '', group: '', region: '', note: '', quota: '', unit: 'GB', resetDay: '1', mode: 'sum', expire: '' })
+export const blankForm = (): NodeForm => ({ name: '', group: '', region: '', note: '', quota: '', unit: 'GB', resetDay: '1', mode: 'sum', expire: '', alertOffline: true })
 
 /** 管理员节点里已存的配置（不是用量缓存 traffic）。 */
 export interface NodeConfig {
@@ -24,6 +25,7 @@ export interface NodeConfig {
   traffic_reset_day?: number
   traffic_mode?: TrafficMode
   expire_date?: string | null
+  alert_offline?: boolean
 }
 
 export function formFromNode(n: NodeConfig): NodeForm {
@@ -37,6 +39,7 @@ export function formFromNode(n: NodeConfig): NodeForm {
   if (n.traffic_reset_day) f.resetDay = String(n.traffic_reset_day)
   if (n.traffic_mode) f.mode = n.traffic_mode
   f.expire = n.expire_date ?? ''
+  f.alertOffline = n.alert_offline ?? true
   return f
 }
 
@@ -60,5 +63,6 @@ export function diffPatch(seed: NodeForm, form: NodeForm): Record<string, unknow
   if (Number(form.resetDay) !== Number(seed.resetDay)) out.traffic_reset_day = Number(form.resetDay)
   if (form.mode !== seed.mode) out.traffic_mode = form.mode
   if (form.expire !== seed.expire) out.expire_date = form.expire || null
+  if (form.alertOffline !== seed.alertOffline) out.alert_offline = form.alertOffline
   return out
 }
