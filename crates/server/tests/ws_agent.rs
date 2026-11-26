@@ -112,11 +112,19 @@ async fn recv(ws: &mut Ws) -> Option<ServerMsg> {
     }
 }
 
+/// 下一个连接相关的 live 事件。后台任务（rollup 启动即重算流量、探测结果）发布的
+/// Traffic / Probe 与连接时序无关，可能插在任意位置，跳过。
 async fn next_event(rx: &mut broadcast::Receiver<LiveEvent>) -> LiveEvent {
-    tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .expect("等待 live 事件超时")
-        .unwrap()
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match rx.recv().await.unwrap() {
+                LiveEvent::Traffic { .. } | LiveEvent::Probe { .. } => {}
+                ev => return ev,
+            }
+        }
+    })
+    .await
+    .expect("等待 live 事件超时")
 }
 
 #[tokio::test]
@@ -171,6 +179,8 @@ async fn hello_gets_welcome_and_report_updates_registry() {
     assert!(
         matches!(next_event(&mut live).await, LiveEvent::Online { node_id } if node_id == fx.node_id)
     );
+    // 后台 rollup 启动即重算流量并发布 Traffic，可能插在 Online 与 Report 之间（CI 上偶发）；这里固定复现该时序。
+    fx.state.recompute_traffic(None).await;
     send(&mut ws, &AgentMsg::Report(report())).await;
     assert!(matches!(
         next_event(&mut live).await,
