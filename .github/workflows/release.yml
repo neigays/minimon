@@ -57,10 +57,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: 安装 zig 与 cargo-zigbuild
         run: |
-          pip install ziglang==0.13.0
-          cargo install cargo-zigbuild --locked
+          pip install ziglang==0.17.1
+          cargo install cargo-zigbuild --version 0.24.1 --locked
       - name: 构建
         run: cargo zigbuild --release --locked -p minimon-agent -p minimon-server --target ${{ matrix.target }}
       - name: 重命名并检查体积
