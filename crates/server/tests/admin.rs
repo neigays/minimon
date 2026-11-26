@@ -682,3 +682,69 @@ async fn tags_patch_and_views() {
     let (_, list) = nodes(&f, Some(&cookie)).await;
     assert_eq!(list[0]["tags_raw"], "1Gbps<yellow>;CN2 GIA<red>");
 }
+
+async fn get_token(f: &Fixture, cookie: &str, id: i64) -> (u16, Value) {
+    let (c, _, b) = http(
+        f.port,
+        "GET",
+        &format!("/api/admin/nodes/{id}/token"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    (c, serde_json::from_str(&b).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn token_endpoint_returns_created_token() {
+    let f = start(|_| {}).await;
+    let cookie = login(f.port).await;
+    let (id, token) = create(&f, &cookie, "a").await;
+    let (code, v) = get_token(&f, &cookie, id).await;
+    assert_eq!(code, 200, "{v}");
+    assert_eq!(v["token"], token.as_str());
+    // token_not_in_lists
+    for (path, ck) in [
+        ("/api/nodes", None),
+        ("/api/admin/nodes", Some(cookie.as_str())),
+    ] {
+        let (_, _, b) = http(f.port, "GET", path, ck, None).await;
+        assert!(!b.contains(&token), "{path} 泄露 token");
+    }
+    let (code, _, _) = http(
+        f.port,
+        "GET",
+        &format!("/api/admin/nodes/{id}/token"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(code, 401);
+    let (code, _) = get_token(&f, &cookie, 9999).await;
+    assert_eq!(code, 404);
+}
+
+#[tokio::test]
+async fn token_endpoint_legacy_then_reset() {
+    let f = start(|_| {}).await;
+    let cookie = login(f.port).await;
+    let (id, _) = create(&f, &cookie, "a").await;
+    // 模拟旧版本创建的节点：只存了哈希
+    let c = rusqlite::Connection::open(&f.db_path).unwrap();
+    c.execute("UPDATE nodes SET token = NULL", []).unwrap();
+    drop(c);
+    let (code, v) = get_token(&f, &cookie, id).await;
+    assert_eq!(code, 200);
+    assert!(v["token"].is_null(), "{v}");
+    let (code, r) = call(
+        &f,
+        "POST",
+        &format!("/api/admin/nodes/{id}/token"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{r}");
+    let (_, v) = get_token(&f, &cookie, id).await;
+    assert_eq!(v["token"], r["token"]);
+}

@@ -11,7 +11,7 @@ use crate::views::{self, AdminNode};
 use axum::extract::{FromRequestParts, Path, State};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
-use axum::routing::{get, patch, post, put};
+use axum::routing::{get, patch, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +22,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/admin/nodes", get(list).post(create))
         .route("/api/admin/nodes/order", put(reorder))
         .route("/api/admin/nodes/{id}", patch(update).delete(remove))
-        .route("/api/admin/nodes/{id}/token", post(reset_token))
+        .route(
+            "/api/admin/nodes/{id}/token",
+            get(node_token).post(reset_token),
+        )
         .route("/api/admin/settings", get(get_settings).put(put_settings))
 }
 
@@ -310,6 +313,19 @@ async fn remove(
     }
     state.publish_resync();
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// 查看 token 原文（用于随时显示安装命令）；旧节点只存了哈希时返回 null。
+async fn node_token(
+    _: AdminOnly,
+    State(state): State<AppState>,
+    NodeId(id): NodeId,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let db = state.db.clone();
+    let token = blocking(move || db.node_token(id))
+        .await?
+        .ok_or_else(|| ApiError::not_found(MSG_NO_NODE))?;
+    Ok(Json(serde_json::json!({ "token": token })))
 }
 
 async fn reset_token(

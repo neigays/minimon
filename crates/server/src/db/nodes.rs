@@ -180,9 +180,9 @@ impl Db {
                     r.get(0)
                 })?;
             tx.execute(
-                "INSERT INTO nodes (name, token_hash, created_ms, sort, grp, region, note) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![name, hash, created_ms, sort, group, region, note],
+                "INSERT INTO nodes (name, token_hash, token, created_ms, sort, grp, region, note) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![name, hash, token, created_ms, sort, group, region, note],
             )?;
             let id = tx.last_insert_rowid();
             tx.commit()?;
@@ -288,10 +288,22 @@ impl Db {
         let hash = hash_token(&token);
         self.write(|c| {
             let n = c.execute(
-                "UPDATE nodes SET token_hash = ?1 WHERE id = ?2",
-                params![hash, id],
+                "UPDATE nodes SET token_hash = ?1, token = ?2 WHERE id = ?3",
+                params![hash, token, id],
             )?;
             Ok((n > 0).then_some(token))
+        })
+    }
+
+    /// 节点的 token 原文：外层 None = 节点不存在；内层 None = 旧版本创建、只存了哈希。
+    pub fn node_token(&self, id: i64) -> Result<Option<Option<String>>, DbError> {
+        self.read(|c| {
+            Ok(
+                c.query_row("SELECT token FROM nodes WHERE id = ?1", [id], |r| {
+                    r.get::<_, Option<String>>(0)
+                })
+                .optional()?,
+            )
         })
     }
 
@@ -322,8 +334,9 @@ impl Db {
                     r.get(0)
                 })?;
             tx.execute(
-                "INSERT INTO nodes (name, token_hash, created_ms, sort) VALUES (?1, ?2, ?3, ?4)",
-                params![name, hash, created_ms, sort],
+                "INSERT INTO nodes (name, token_hash, token, created_ms, sort) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![name, hash, token, created_ms, sort],
             )?;
             let id = tx.last_insert_rowid();
             tx.commit()?;
