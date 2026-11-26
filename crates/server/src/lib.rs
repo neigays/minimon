@@ -18,6 +18,7 @@ mod probe_api;
 mod probe_history;
 mod rollup;
 pub mod state;
+mod tags;
 pub mod traffic;
 mod views;
 mod web;

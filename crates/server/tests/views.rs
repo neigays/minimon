@@ -17,6 +17,7 @@ type Ws =
 const PUBLIC_KEYS: &[&str] = &[
     "id",
     "name",
+    "tags",
     "online",
     "sort",
     "group",
@@ -35,6 +36,7 @@ const PUBLIC_KEYS: &[&str] = &[
 ];
 const ADMIN_EXTRA: &[&str] = &[
     "hidden",
+    "tags_raw",
     "hostname",
     "kernel",
     "agent_version",

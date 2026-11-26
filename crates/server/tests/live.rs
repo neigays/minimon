@@ -296,6 +296,7 @@ async fn public_output_key_allowlist() {
     let node_keys = sorted(&[
         "id",
         "name",
+        "tags",
         "online",
         "sort",
         "group",

@@ -182,6 +182,7 @@ struct PatchReq {
     #[serde(default, deserialize_with = "tri_state")]
     expire_date: Option<Option<String>>,
     alert_offline: Option<bool>,
+    tags: Option<String>,
 }
 
 /// 三态字段：缺省 = 不改（`None`），显式 null = 清除（`Some(None)`），值 = 设置。
@@ -237,6 +238,12 @@ async fn update(
     let b = validate_billing(&req)?;
     let billing_touched = req.traffic_quota.is_some() || b.reset_day.is_some() || b.mode.is_some();
     let f = validate(req.name, req.group, req.region, req.note)?;
+    let tags = req
+        .tags
+        .as_deref()
+        .map(crate::tags::normalize_tags)
+        .transpose()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
     let patch = NodePatch {
         name: f.name,
         group: f.group,
@@ -248,6 +255,7 @@ async fn update(
         traffic_mode: b.mode,
         expire_date: req.expire_date,
         alert_offline: req.alert_offline,
+        tags,
     };
     let db = state.db.clone();
     if !blocking(move || db.update_node(id, &patch)).await? {

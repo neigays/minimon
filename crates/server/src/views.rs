@@ -14,6 +14,7 @@ use std::collections::HashSet;
 pub struct PublicNode {
     pub id: i64,
     pub name: String,
+    pub tags: Vec<crate::tags::Tag>,
     pub online: bool,
     pub sort: i64,
     pub group: String,
@@ -37,6 +38,8 @@ pub struct AdminNode {
     #[serde(flatten)]
     pub base: PublicNode,
     pub hidden: bool,
+    /// 原始标签串，供编辑。
+    pub tags_raw: String,
     pub hostname: Option<String>,
     pub kernel: Option<String>,
     pub agent_version: Option<String>,
@@ -109,6 +112,7 @@ fn base(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> (PublicNode, 
     let p = PublicNode {
         id: n.id,
         name: n.name.clone(),
+        tags: crate::tags::tags_for_view(&n.tags),
         online: snap.online.contains(&n.id),
         sort: n.sort,
         group: n.group.clone(),
@@ -167,6 +171,7 @@ fn admin_view(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> AdminNo
     AdminNode {
         base,
         hidden: n.hidden,
+        tags_raw: n.tags.clone(),
         hostname: info.as_ref().map(|h| h.hostname.clone()),
         kernel: info.as_ref().map(|h| h.kernel.clone()),
         agent_version: info.as_ref().map(|h| h.agent_version.clone()),

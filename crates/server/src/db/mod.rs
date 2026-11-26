@@ -65,6 +65,7 @@ fn migrate(conn: &mut Connection) -> Result<(), DbError> {
         M::up(include_str!("migrations/0003_nodes_autoincrement.sql")),
         M::up(include_str!("migrations/0004_m3.sql")),
         M::up(include_str!("migrations/0005_m4a.sql")),
+        M::up(include_str!("migrations/0006_node_tags.sql")),
     ]);
     migrations.to_latest(conn)?;
     Ok(())

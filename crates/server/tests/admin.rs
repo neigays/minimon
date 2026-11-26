@@ -642,3 +642,43 @@ async fn health_is_200_even_with_require_login() {
     let (code, _, body) = http(f.port, "GET", "/api/health", None, None).await;
     assert_eq!((code, body.as_str()), (200, r#"{"ok":true}"#));
 }
+
+#[tokio::test]
+async fn tags_patch_and_views() {
+    let f = start(|_| {}).await;
+    let cookie = login(f.port).await;
+    let (id, _) = create(&f, &cookie, "a").await;
+    // existing_nodes_default_empty：新建节点无标签
+    let (_, list) = nodes(&f, None).await;
+    assert_eq!(list[0]["tags"], json!([]));
+    let (code, v) = call(
+        &f,
+        "PATCH",
+        &format!("/api/admin/nodes/{id}"),
+        &cookie,
+        Some(json!({"tags": "1Gbps<yellow>;CN2 GIA<red>"})),
+    )
+    .await;
+    assert_eq!(code, 200, "{v}");
+    assert_eq!(v["tags_raw"], "1Gbps<yellow>;CN2 GIA<red>");
+    let (_, list) = nodes(&f, None).await;
+    assert_eq!(
+        list[0]["tags"],
+        json!([{"text": "1Gbps", "color": "yellow"}, {"text": "CN2 GIA", "color": "red"}])
+    );
+    assert!(list[0].get("tags_raw").is_none());
+    let (_, list) = nodes(&f, Some(&cookie)).await;
+    assert_eq!(list[0]["tags_raw"], "1Gbps<yellow>;CN2 GIA<red>");
+    let (code, v) = call(
+        &f,
+        "PATCH",
+        &format!("/api/admin/nodes/{id}"),
+        &cookie,
+        Some(json!({"tags": "x<rainbow>"})),
+    )
+    .await;
+    assert_eq!(code, 400);
+    assert!(v.to_string().contains("rainbow"), "{v}");
+    let (_, list) = nodes(&f, Some(&cookie)).await;
+    assert_eq!(list[0]["tags_raw"], "1Gbps<yellow>;CN2 GIA<red>");
+}

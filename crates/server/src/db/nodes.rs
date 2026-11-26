@@ -59,11 +59,13 @@ pub struct Node {
     pub expire_date: Option<String>,
     /// 是否参与离线告警。
     pub alert_offline: bool,
+    /// 规范化后的标签串（见 `crate::tags`）。
+    pub tags: String,
 }
 
 const NODE_COLS: &str = "id, name, sort, hidden, info_json, grp, region, note, last_ip, \
      last_seen_ms, created_ms, traffic_quota, traffic_reset_day, traffic_mode, expire_date, \
-     alert_offline";
+     alert_offline, tags";
 
 fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -131,6 +133,7 @@ fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
         },
         expire_date: r.get(14)?,
         alert_offline: r.get::<_, i64>(15)? != 0,
+        tags: r.get(16)?,
     })
 }
 
@@ -147,6 +150,8 @@ pub struct NodePatch {
     pub traffic_mode: Option<TrafficMode>,
     pub expire_date: Option<Option<String>>,
     pub alert_offline: Option<bool>,
+    /// 已规范化的标签串。
+    pub tags: Option<String>,
 }
 
 impl Db {
@@ -193,6 +198,7 @@ impl Db {
             traffic_mode: TrafficMode::Sum,
             expire_date: None,
             alert_offline: true,
+            tags: String::new(),
         };
         Ok((node, token))
     }
@@ -208,7 +214,8 @@ impl Db {
                  traffic_reset_day = coalesce(?8, traffic_reset_day), \
                  traffic_mode = coalesce(?9, traffic_mode), \
                  expire_date = CASE WHEN ?10 THEN ?11 ELSE expire_date END, \
-                 alert_offline = coalesce(?12, alert_offline) \
+                 alert_offline = coalesce(?12, alert_offline), \
+                 tags = coalesce(?14, tags) \
                  WHERE id = ?13",
                 params![
                     p.name,
@@ -223,7 +230,8 @@ impl Db {
                     p.expire_date.is_some(),
                     p.expire_date.clone().flatten(),
                     p.alert_offline.map(i64::from),
-                    id
+                    id,
+                    p.tags
                 ],
             )?;
             Ok(n > 0)
@@ -312,6 +320,7 @@ impl Db {
             traffic_mode: TrafficMode::Sum,
             expire_date: None,
             alert_offline: true,
+            tags: String::new(),
         };
         Ok((node, token))
     }
