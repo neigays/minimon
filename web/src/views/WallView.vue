@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import NodeCard from '../components/NodeCard.vue'
 import { formatRate } from '../format'
+import { useSmoothedRates } from '../smooth'
 import { useLive } from '../live'
 import { statusOf } from '../status'
 
@@ -34,6 +35,10 @@ const summary = computed(() => {
     tx: up.reduce((a, x) => a + (x.n.latest?.net_tx_rate ?? 0), 0),
   }
 })
+// 总速率按固定节拍平滑并缓动显示，避免每台节点上报时数字生硬跳变。
+const rates = useSmoothedRates(() => [summary.value.rx, summary.value.tx], () => loaded.value)
+const rx = computed(() => rates.value[0] ?? summary.value.rx)
+const tx = computed(() => rates.value[1] ?? summary.value.tx)
 </script>
 
 <template>
@@ -45,8 +50,8 @@ const summary = computed(() => {
         <span><span class="k">在线</span><span class="v num">{{ summary.online }}</span><span class="k tail">/ {{ summary.total }}</span></span>
         <span><span class="k">离线</span><span class="v num" :class="{ bad: summary.offline }">{{ summary.offline }}</span></span>
         <span title="CPU、内存或磁盘任一 ≥ 90% 的在线节点"><span class="k">高负载</span><span class="v num" :class="{ warn: summary.busy }">{{ summary.busy }}</span></span>
-        <span><span class="k">总下行</span><span class="v num">{{ formatRate(summary.rx) }}</span></span>
-        <span><span class="k">总上行</span><span class="v num">{{ formatRate(summary.tx) }}</span></span>
+        <span><span class="k">总下行</span><span class="v num rate">{{ formatRate(rx) }}</span></span>
+        <span><span class="k">总上行</span><span class="v num rate">{{ formatRate(tx) }}</span></span>
       </div>
       <div class="chips" role="group" aria-label="按分组筛选">
         <button type="button" class="chip" :aria-pressed="group === ALL" @click="group = ALL">{{ ALL }}<span class="n num">{{ sorted.length }}</span></button>
@@ -64,6 +69,8 @@ const summary = computed(() => {
 .k { color: var(--muted); font-size: 12px; margin-right: 6px; }
 .k.tail { margin: 0 0 0 2px; }
 .summary > span { padding: 0 20px; }
+/* 单位切换（KB/s ↔ MB/s）时宽度不变，不挤动右侧项目 */
+.summary .v.rate { display: inline-block; min-width: 11ch; }
 .summary > span + span { border-left: 1px solid var(--line); }
 @media (max-width: 640px) {
   .summary { display: grid; grid-template-columns: repeat(3, auto); justify-content: start; gap: 8px 0; padding: 12px 0; }
