@@ -57,10 +57,13 @@ pub struct Node {
     pub traffic_mode: TrafficMode,
     /// 到期日 `YYYY-MM-DD`（按全局时区理解）。
     pub expire_date: Option<String>,
+    /// 是否参与离线告警。
+    pub alert_offline: bool,
 }
 
 const NODE_COLS: &str = "id, name, sort, hidden, info_json, grp, region, note, last_ip, \
-     last_seen_ms, created_ms, traffic_quota, traffic_reset_day, traffic_mode, expire_date";
+     last_seen_ms, created_ms, traffic_quota, traffic_reset_day, traffic_mode, expire_date, \
+     alert_offline";
 
 fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -127,6 +130,7 @@ fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
             })
         },
         expire_date: r.get(14)?,
+        alert_offline: r.get::<_, i64>(15)? != 0,
     })
 }
 
@@ -142,6 +146,7 @@ pub struct NodePatch {
     pub traffic_reset_day: Option<u8>,
     pub traffic_mode: Option<TrafficMode>,
     pub expire_date: Option<Option<String>>,
+    pub alert_offline: Option<bool>,
 }
 
 impl Db {
@@ -187,6 +192,7 @@ impl Db {
             traffic_reset_day: 1,
             traffic_mode: TrafficMode::Sum,
             expire_date: None,
+            alert_offline: true,
         };
         Ok((node, token))
     }
@@ -201,8 +207,9 @@ impl Db {
                  traffic_quota = CASE WHEN ?6 THEN ?7 ELSE traffic_quota END, \
                  traffic_reset_day = coalesce(?8, traffic_reset_day), \
                  traffic_mode = coalesce(?9, traffic_mode), \
-                 expire_date = CASE WHEN ?10 THEN ?11 ELSE expire_date END \
-                 WHERE id = ?12",
+                 expire_date = CASE WHEN ?10 THEN ?11 ELSE expire_date END, \
+                 alert_offline = coalesce(?12, alert_offline) \
+                 WHERE id = ?13",
                 params![
                     p.name,
                     p.group,
@@ -215,6 +222,7 @@ impl Db {
                     p.traffic_mode.map(TrafficMode::as_str),
                     p.expire_date.is_some(),
                     p.expire_date.clone().flatten(),
+                    p.alert_offline.map(i64::from),
                     id
                 ],
             )?;
@@ -231,6 +239,9 @@ impl Db {
             }
             // 无外键：探测任务关联与节点行同一事务删除。
             tx.execute("DELETE FROM probe_task_nodes WHERE node_id = ?1", [id])?;
+            for t in ["alert_state", "alert_marks", "alert_rule_nodes"] {
+                tx.execute(&format!("DELETE FROM {t} WHERE node_id = ?1"), [id])?;
+            }
             let n = tx.execute("DELETE FROM nodes WHERE id = ?1", [id])?;
             tx.commit()?;
             Ok(n > 0)
@@ -300,6 +311,7 @@ impl Db {
             traffic_reset_day: 1,
             traffic_mode: TrafficMode::Sum,
             expire_date: None,
+            alert_offline: true,
         };
         Ok((node, token))
     }
@@ -677,5 +689,76 @@ mod tests {
             assert_eq!(cnt, 0, "{t}");
         }
         assert_eq!(n.id, 1);
+    }
+
+    #[test]
+    fn node_alert_offline_patch() {
+        let db = Db::open_in_memory().unwrap();
+        let (n, _) = db.add_node("a").unwrap();
+        assert!(n.alert_offline);
+        assert!(db.list_nodes().unwrap()[0].alert_offline);
+        let p = NodePatch {
+            alert_offline: Some(false),
+            ..Default::default()
+        };
+        assert!(db.update_node(n.id, &p).unwrap());
+        assert!(!db.list_nodes().unwrap()[0].alert_offline);
+    }
+
+    #[test]
+    fn node_delete_cleans_alert_rows() {
+        use crate::alert::model::*;
+        let db = Db::open_in_memory().unwrap();
+        let (n, _) = db.add_node("a").unwrap();
+        let rule = db
+            .create_alert_rule(&NewAlertRule {
+                name: "r".into(),
+                enabled: true,
+                metric: Metric::Cpu,
+                op: Op::Gt,
+                threshold: 90.0,
+                duration_secs: 300,
+                cooldown_secs: 1800,
+                all_nodes: false,
+                node_ids: vec![n.id],
+                probe_task_id: None,
+            })
+            .unwrap();
+        let key = AlertKey {
+            kind: StateKind::Rule,
+            rule_id: rule.id,
+            node_id: n.id,
+            task_id: 0,
+        };
+        let st = StateRow {
+            key,
+            firing: false,
+            since_ms: 1,
+            fired_ms: None,
+            notified: false,
+            value: None,
+            last_notified_ms: None,
+        };
+        let mark = Mark {
+            node_id: n.id,
+            kind: MarkKind::Traffic,
+            mark: "2026-11:80".into(),
+        };
+        db.apply_alert_effects(&[st], &[], &[mark]).unwrap();
+        db.insert_alert_events(&[NewEvent {
+            ts_ms: 1,
+            node_id: Some(n.id),
+            node_name: Some("a".into()),
+            kind: EventKind::Firing,
+            title: "t".into(),
+            body: "b".into(),
+            sent: SendStatus::Pending,
+        }])
+        .unwrap();
+        assert!(db.delete_node(n.id).unwrap());
+        assert!(db.load_alert_states().unwrap().is_empty());
+        assert!(db.load_alert_marks().unwrap().is_empty());
+        assert!(db.list_alert_rules().unwrap()[0].node_ids.is_empty());
+        assert_eq!(db.list_alert_events(None, 10).unwrap().len(), 1);
     }
 }

@@ -1,4 +1,5 @@
 mod aggregate;
+pub mod alert;
 pub mod auth;
 pub mod history;
 mod last_report;
@@ -63,6 +64,7 @@ fn migrate(conn: &mut Connection) -> Result<(), DbError> {
         M::up(include_str!("migrations/0002_m2.sql")),
         M::up(include_str!("migrations/0003_nodes_autoincrement.sql")),
         M::up(include_str!("migrations/0004_m3.sql")),
+        M::up(include_str!("migrations/0005_m4a.sql")),
     ]);
     migrations.to_latest(conn)?;
     Ok(())

@@ -246,6 +246,7 @@ async fn update(
         traffic_reset_day: b.reset_day,
         traffic_mode: b.mode,
         expire_date: req.expire_date,
+        alert_offline: None,
     };
     let db = state.db.clone();
     if !blocking(move || db.update_node(id, &patch)).await? {

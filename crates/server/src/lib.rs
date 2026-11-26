@@ -1,4 +1,5 @@
 mod admin;
+pub mod alert;
 mod auth;
 mod auth_api;
 pub mod clock;
