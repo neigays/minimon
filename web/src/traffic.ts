@@ -27,6 +27,14 @@ export function bytesToQuotaInput(n: number): { value: number; unit: 'GB' | 'TB'
   return { value: Math.round((n / 1e9) * 100) / 100, unit: 'GB' }
 }
 
+/** 卡片流量条：用量 > 0 时至少 2px 可见，占比 < 1% 显示「<1%」。 */
+export function trafficBar(used: number, quota: number): { width: string; label: string } {
+  const pct = quotaPct(used, quota)
+  if (used <= 0 || pct <= 0) return { width: '0%', label: '0%' }
+  if (pct < 1) return { width: `max(2px, ${pct.toFixed(2)}%)`, label: '<1%' }
+  return { width: `${pct.toFixed(1)}%`, label: `${Math.round(pct)}%` }
+}
+
 export function quotaPct(used: number, quota: number | null): number {
   if (!quota || quota <= 0) return 0
   return Math.max(0, Math.min(100, (used / quota) * 100))

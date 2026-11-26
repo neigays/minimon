@@ -10,9 +10,8 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuth()
 const { user, loginRequired } = auth
-const { connected, lastMsgMs, now } = useLive()
+const { connected } = useLive()
 
-const ago = computed(() => (lastMsgMs.value ? Math.max(0, Math.floor((now.value - lastMsgMs.value) / 1000)) : 0))
 const inAdmin = computed(() => route.path.startsWith('/admin'))
 
 // 会话失效或站点要求登录时，当前页面立即跳转登录页。
@@ -39,10 +38,9 @@ async function logout() {
         <RouterLink to="/admin" :aria-current="inAdmin ? 'page' : undefined">后台</RouterLink>
       </nav>
       <span class="spacer"></span>
-      <span class="live" :class="{ down: !connected }" role="status">
+      <span v-if="!connected" class="live down" role="status">
         <span class="dot" aria-hidden="true"></span>
-        <span class="txt" v-if="connected">实时 · <span class="num">{{ ago }}</span> 秒前更新</span>
-        <span class="txt" v-else>连接中断，重连中…</span>
+        <span class="txt">连接中断，重连中…</span>
       </span>
       <button class="icon-btn" type="button" aria-label="切换浅色/深色" @click="toggleTheme">
         <svg v-if="theme === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
@@ -67,10 +65,8 @@ nav.main a { text-decoration: none; padding: 6px 10px; border-radius: 6px; color
 nav.main a[aria-current="page"] { color: var(--fg); background: var(--surface-2); }
 nav.main a:hover { color: var(--fg); }
 .spacer { flex: 1; }
-.live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 0 var(--ok-soft); animation: pulse 2s infinite; }
-.live.down .dot { background: var(--bad); animation: none; }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 var(--ok-soft); } 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--bad); font-size: 12px; white-space: nowrap; }
+.live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
 @media (max-width: 720px) {
   .bar { gap: 10px; }
   .live .txt { display: none; }

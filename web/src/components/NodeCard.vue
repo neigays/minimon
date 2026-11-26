@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useAuth } from '../auth'
 import { formatRate, formatShort, formatUptime } from '../format'
 import type { PublicNode } from '../live'
-import { expireLevel, expireText, formatDecBytes, quotaPct } from '../traffic'
+import { expireLevel, expireText, formatDecBytes, quotaPct, trafficBar } from '../traffic'
 import { level, offlineFor, statusOf, usagePct } from '../status'
 import Meter from './Meter.vue'
 import ProbeRow from './ProbeRow.vue'
@@ -48,7 +48,7 @@ const offlineText = computed(() => {
       <div v-if="tr || days !== null" class="adm">
         <template v-if="tr">
           <span class="tl">本月 <b class="num">{{ formatDecBytes(tr.used) }}</b><template v-if="tr.quota"> / {{ formatDecBytes(tr.quota) }}</template></span>
-          <span v-if="tr.quota" class="tbar" role="meter" aria-label="本月流量" :aria-valuenow="Math.round(quotaPct(tr.used, tr.quota))" aria-valuemin="0" aria-valuemax="100"><i :class="level(quotaPct(tr.used, tr.quota))" :style="{ width: quotaPct(tr.used, tr.quota).toFixed(1) + '%' }"></i></span>
+          <template v-if="tr.quota"><span class="tbar" role="meter" aria-label="本月流量" :aria-valuenow="Math.round(quotaPct(tr.used, tr.quota))" aria-valuemin="0" aria-valuemax="100"><i :class="level(quotaPct(tr.used, tr.quota))" :style="{ width: trafficBar(tr.used, tr.quota).width }"></i></span><span class="tpct num">{{ trafficBar(tr.used, tr.quota).label }}</span></template>
         </template>
         <span v-if="days !== null" class="exp" :class="expireLevel(days)">{{ expireText(days) }}</span>
       </div>
@@ -86,8 +86,9 @@ const offlineText = computed(() => {
 .foot b { color: var(--fg-2); font-weight: 500; }
 .adm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; color: var(--muted); }
 .adm .tl b { color: var(--fg-2); font-weight: 500; }
-.tbar { flex: 1; min-width: 48px; height: 3px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
-.tbar i { display: block; height: 100%; background: var(--ok); }
+.tbar { flex: 1; min-width: 48px; height: 6px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.tbar i { display: block; height: 100%; background: var(--ok); border-radius: 3px; }
+.tpct { font-size: 12px; color: var(--fg-2); min-width: 32px; text-align: right; }
 .tbar i.hi { background: var(--warn); }
 .tbar i.crit { background: var(--bad); }
 .exp { margin-left: auto; }

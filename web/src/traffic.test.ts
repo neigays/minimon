@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { bytesToQuotaInput, expireLevel, expireText, formatDecBytes, formatPeriodDay, gbToBytes, quotaPct } from './traffic'
+import { bytesToQuotaInput, expireLevel, expireText, formatDecBytes, formatPeriodDay, gbToBytes, quotaPct, trafficBar } from './traffic'
 
 test('decimal traffic', () => {
   expect(formatDecBytes(126_400_000_000)).toBe('126.4G')
@@ -40,4 +40,13 @@ test('formatPeriodDay uses the given timezone', () => {
   expect(formatPeriodDay(ms, 'America/New_York')).toBe('2/28 11:00')
   expect(formatPeriodDay(ms, 'UTC')).toBe('2/28 16:00')
   expect(formatPeriodDay(ms, 'Mars/X')).toMatch(/^\d+\/\d+ \d\d:\d\d$/)
+})
+
+test('trafficBar: visible minimum and <1% label', () => {
+  expect(trafficBar(0, 1e12)).toEqual({ width: '0%', label: '0%' })
+  const tiny = trafficBar(66e6, 1e12)
+  expect(tiny.label).toBe('<1%')
+  expect(tiny.width).toContain('2px')
+  expect(trafficBar(5e11, 1e12)).toEqual({ width: '50.0%', label: '50%' })
+  expect(trafficBar(2e12, 1e12).label).toBe('100%')
 })
