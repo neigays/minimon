@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { api, ApiError } from '../../api'
-import { agentCommand, wsBase } from '../../agentCmd'
+import { agentCommand, httpBase, installCommand, wsBase } from '../../agentCmd'
 import ConfirmButton from '../../components/ConfirmButton.vue'
 import StatusPill from '../../components/StatusPill.vue'
 import { useLive, type PublicNode } from '../../live'
@@ -78,12 +78,17 @@ function remove(n: AdminNode) {
 }
 
 // ---------- 新增 / 重置 token 抽屉 ----------
-const drawer = ref<{ title: string; command: string } | null>(null)
+const drawer = ref<{ title: string; command: string; manual: string } | null>(null)
 const drawerEl = ref<HTMLElement | null>(null)
 const copyMsg = ref('')
 
 async function showDrawer(title: string, token: string) {
-  drawer.value = { title, command: agentCommand(wsBase(publicUrl, location), token) }
+  const ws = wsBase(publicUrl, location)
+  drawer.value = {
+    title,
+    command: installCommand(httpBase(publicUrl, location), ws, token),
+    manual: agentCommand(ws, token),
+  }
   copyMsg.value = ''
   await nextTick()
   drawerEl.value?.focus()
@@ -189,7 +194,10 @@ async function submitForm() {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
         <span>token 只显示这一次，关闭后无法再查看，只能重置。</span>
       </div>
-      <pre class="code" tabindex="0" aria-label="agent 启动命令">{{ drawer.command }}</pre>
+      <pre class="code" tabindex="0" aria-label="一键安装命令">{{ drawer.command }}</pre>
+      <p class="sub">国内 VPS 下载慢可在末尾加 <code>--mirror &lt;代理前缀&gt;</code>，如 <code>https://ghproxy.example/</code></p>
+      <p class="sub">已手动安装二进制：</p>
+      <pre class="code" tabindex="0" aria-label="agent 启动命令">{{ drawer.manual }}</pre>
       <div class="row">
         <button class="btn" type="button" @click="copy">复制命令</button>
         <button class="btn ghost" type="button" @click="drawer = null">我已保存，关闭</button>
@@ -283,6 +291,7 @@ td.empty { text-align: center; }
 .drawer { margin-bottom: 14px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 16px; display: grid; gap: 12px; }
 .drawer h3 { margin: 0; font-size: 14px; }
 .code { margin: 0; font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; white-space: pre; color: var(--fg-2); user-select: all; }
+.sub { margin: 0; font-size: 12px; color: var(--muted); }
 .hint { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: flex-start; }
 .hint svg { flex: none; margin-top: 2px; color: var(--warn); }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
