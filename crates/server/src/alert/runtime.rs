@@ -72,8 +72,6 @@ impl AlertShared {
     }
 
     /// 重新读取告警设置；关闭离线告警时清除离线状态。
-    // 告警设置接口（Task 6）接入后去掉。
-    #[allow(dead_code)]
     pub(crate) async fn reload_settings(&self, db: &Arc<Db>) -> Result<(), DbError> {
         let _serial = self.serial.lock().await;
         let d = db.clone();

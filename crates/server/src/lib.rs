@@ -1,5 +1,6 @@
 mod admin;
 pub mod alert;
+mod alert_api;
 mod auth;
 mod auth_api;
 pub mod clock;
@@ -46,6 +47,7 @@ pub fn router(state: AppState) -> Router {
         .merge(auth_api::routes())
         .merge(admin::routes())
         .merge(probe_api::routes())
+        .merge(alert_api::routes())
         .fallback(web::fallback)
         .layer(axum::middleware::from_fn(auth::require_json))
         .with_state(state)

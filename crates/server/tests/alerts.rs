@@ -218,3 +218,214 @@ async fn deleted_node_state_forgotten() {
     assert!(states.iter().all(|s| s.key.node_id != id), "{states:?}");
     f.stop().await;
 }
+
+// ------------------------------------------------------------ 管理 API
+
+async fn admin_fixture() -> (Fixture, String) {
+    let f = common::start(|_| {}).await;
+    let cookie = login(f.port).await;
+    (f, cookie)
+}
+
+fn json(body: &str) -> serde_json::Value {
+    serde_json::from_str(body).unwrap()
+}
+
+#[tokio::test]
+async fn rules_crud_and_validation() {
+    let (f, c) = admin_fixture().await;
+    let p = f.port;
+    let rule = r#"{"name":"cpu高","enabled":true,"metric":"cpu","op":"gt","threshold":90,"all_nodes":true,"node_ids":[]}"#;
+    let (code, _, body) = http(p, "POST", "/api/admin/alert-rules", Some(&c), Some(rule)).await;
+    assert_eq!(code, 201, "{body}");
+    let v = json(&body);
+    assert_eq!(v["duration_secs"], 300);
+    assert_eq!(v["cooldown_secs"], 1800);
+    let id = v["id"].as_i64().unwrap();
+
+    let bad = |extra: &str| {
+        format!(
+            r#"{{"name":"x","enabled":true,"metric":"cpu","op":"gt","threshold":90,"all_nodes":true,"node_ids":[]{extra}}}"#
+        )
+    };
+    for (extra, what) in [
+        (r#","duration_secs":5"#, "duration"),
+        (r#","probe_task_id":1"#, "probe"),
+        (r#","threshold":150"#, "threshold"),
+        (r#","cooldown_secs":-1"#, "cooldown"),
+    ] {
+        // 后出现的重复键会让 serde 报错，所以用替换而不是追加。
+        let body = if extra.contains("threshold") {
+            bad("").replace(r#""threshold":90"#, r#""threshold":150"#)
+        } else {
+            bad(extra)
+        };
+        let (code, _, b) = http(p, "POST", "/api/admin/alert-rules", Some(&c), Some(&body)).await;
+        assert_eq!(code, 400, "{what}: {b}");
+    }
+    let (_, _, b) = http(
+        p,
+        "POST",
+        "/api/admin/alert-rules",
+        Some(&c),
+        Some(&bad(r#","probe_task_id":1"#)),
+    )
+    .await;
+    assert!(b.contains("只有探测类指标可以绑定任务"), "{b}");
+    // all_nodes=false 需要节点
+    let (code, _, _) = http(
+        p,
+        "POST",
+        "/api/admin/alert-rules",
+        Some(&c),
+        Some(&bad("").replace(r#""all_nodes":true"#, r#""all_nodes":false"#)),
+    )
+    .await;
+    assert_eq!(code, 400);
+
+    let (code, _, b) = http(
+        p,
+        "PATCH",
+        &format!("/api/admin/alert-rules/{id}"),
+        Some(&c),
+        Some(r#"{"threshold":80}"#),
+    )
+    .await;
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(json(&b)["threshold"], 80.0);
+    let (code, _, b) = http(p, "GET", "/api/admin/alert-rules", Some(&c), None).await;
+    assert_eq!(code, 200);
+    assert_eq!(json(&b).as_array().unwrap().len(), 1);
+    let (code, _, _) = http(
+        p,
+        "DELETE",
+        &format!("/api/admin/alert-rules/{id}"),
+        Some(&c),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(code, 204);
+    let (code, _, _) = http(
+        p,
+        "DELETE",
+        &format!("/api/admin/alert-rules/{id}"),
+        Some(&c),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(code, 404);
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn sendkey_never_echoed() {
+    let (f, c) = admin_fixture().await;
+    let p = f.port;
+    let put = |b: &'static str| {
+        let c = c.clone();
+        async move { http(p, "PUT", "/api/admin/alert-settings", Some(&c), Some(b)).await }
+    };
+    let (code, _, b) = put(r#"{"sendkey":"sctp42tSECRETKEY"}"#).await;
+    assert_eq!(code, 200, "{b}");
+    assert!(!b.contains("SECRETKEY"));
+    let v = json(&b);
+    assert_eq!(v["sendkey_set"], true);
+    assert_eq!(v["sendkey_tail"], "TKEY");
+    let (code, _, b) = http(p, "GET", "/api/admin/alert-settings", Some(&c), None).await;
+    assert_eq!(code, 200);
+    assert!(!b.contains("SECRETKEY"));
+    assert_eq!(json(&b)["sendkey_tail"], "TKEY");
+    // 其他字段不影响 SendKey
+    let (code, _, b) = put(r#"{"offline_grace_secs":60}"#).await;
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(json(&b)["sendkey_set"], true);
+    assert_eq!(json(&b)["offline_grace_secs"], 60);
+    let (code, _, _) = put(r#"{"offline_grace_secs":5}"#).await;
+    assert_eq!(code, 400);
+    let (code, _, _) = put(r#"{}"#).await;
+    assert_eq!(code, 400);
+    let (code, _, b) = put(r#"{"sendkey":"bad"}"#).await;
+    assert_eq!(code, 400);
+    assert!(b.contains("SendKey 格式不正确"));
+    let (code, _, b) = put(r#"{"sendkey":""}"#).await;
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(json(&b)["sendkey_set"], false);
+    assert!(json(&b)["sendkey_tail"].is_null());
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn alert_endpoints_require_admin() {
+    let f = common::start(|_| {}).await;
+    let p = f.port;
+    for (m, path, body) in [
+        ("GET", "/api/admin/alert-rules", None),
+        ("POST", "/api/admin/alert-rules", Some("{}")),
+        ("PATCH", "/api/admin/alert-rules/1", Some("{}")),
+        ("DELETE", "/api/admin/alert-rules/1", Some("{}")),
+        ("GET", "/api/admin/alert-settings", None),
+        ("PUT", "/api/admin/alert-settings", Some("{}")),
+        ("POST", "/api/admin/alert-settings/test", Some("{}")),
+        ("GET", "/api/admin/alert-events", None),
+        ("GET", "/api/admin/alerts/active", None),
+    ] {
+        let (code, _, b) = http(p, m, path, None, body).await;
+        assert_eq!(code, 401, "{m} {path}: {b}");
+    }
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn node_patch_alert_offline() {
+    let out = std::sync::Arc::new(std::sync::Mutex::new(0));
+    let o2 = out.clone();
+    let f = start_at(
+        tempfile::tempdir().unwrap(),
+        move |db: &Db| *o2.lock().unwrap() = db.add_node("n1").unwrap().0.id,
+        |_| {},
+    )
+    .await;
+    let id = *out.lock().unwrap();
+    let c = login(f.port).await;
+    let (code, _, b) = http(
+        f.port,
+        "PATCH",
+        &format!("/api/admin/nodes/{id}"),
+        Some(&c),
+        Some(r#"{"alert_offline":false}"#),
+    )
+    .await;
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(json(&b)["alert_offline"], false);
+    let (_, _, b) = http(f.port, "GET", "/api/admin/nodes", Some(&c), None).await;
+    assert_eq!(json(&b)[0]["alert_offline"], false);
+    let (_, _, b) = http(f.port, "GET", "/api/nodes", None, None).await;
+    assert!(!b.contains("alert_offline"), "{b}");
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn test_send_without_sendkey_is_400() {
+    let (f, c) = admin_fixture().await;
+    let (code, _, b) = http(
+        f.port,
+        "POST",
+        "/api/admin/alert-settings/test",
+        Some(&c),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(code, 400, "{b}");
+    assert!(b.contains("发送失败"), "{b}");
+    // 失败也记一条 test 事件
+    let (code, _, b) = http(f.port, "GET", "/api/admin/alert-events", Some(&c), None).await;
+    assert_eq!(code, 200);
+    let v = json(&b);
+    assert_eq!(v.as_array().unwrap().len(), 1, "{b}");
+    assert_eq!(v[0]["kind"], "test");
+    assert_eq!(v[0]["sent"], "failed");
+    let (code, _, b) = http(f.port, "GET", "/api/admin/alerts/active", Some(&c), None).await;
+    assert_eq!(code, 200);
+    assert_eq!(b.trim(), "[]");
+    f.stop().await;
+}

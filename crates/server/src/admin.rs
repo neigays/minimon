@@ -181,10 +181,11 @@ struct PatchReq {
     traffic_mode: Option<String>,
     #[serde(default, deserialize_with = "tri_state")]
     expire_date: Option<Option<String>>,
+    alert_offline: Option<bool>,
 }
 
 /// 三态字段：缺省 = 不改（`None`），显式 null = 清除（`Some(None)`），值 = 设置。
-fn tri_state<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn tri_state<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
@@ -246,7 +247,7 @@ async fn update(
         traffic_reset_day: b.reset_day,
         traffic_mode: b.mode,
         expire_date: req.expire_date,
-        alert_offline: None,
+        alert_offline: req.alert_offline,
     };
     let db = state.db.clone();
     if !blocking(move || db.update_node(id, &patch)).await? {

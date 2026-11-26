@@ -47,6 +47,7 @@ const ADMIN_EXTRA: &[&str] = &[
     "traffic",
     "expire_date",
     "expire_days",
+    "alert_offline",
 ];
 
 fn hello() -> Hello {

@@ -50,6 +50,7 @@ pub struct AdminNode {
     pub traffic: Option<TrafficUsage>,
     pub expire_date: Option<String>,
     pub expire_days: Option<i64>,
+    pub alert_offline: bool,
 }
 
 /// 快照里的节点列表，序列化为同一个 JSON 数组。
@@ -176,6 +177,7 @@ fn admin_view(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> AdminNo
         traffic_reset_day: n.traffic_reset_day,
         traffic_mode: n.traffic_mode,
         traffic: state.traffic(n.id),
+        alert_offline: n.alert_offline,
         expire_date: n.expire_date.clone(),
         expire_days: n
             .expire_date
