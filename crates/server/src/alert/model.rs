@@ -184,7 +184,7 @@ pub struct StateRow {
     pub last_notified_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MarkKind {
     Traffic,
     Expire,
