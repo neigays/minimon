@@ -540,3 +540,14 @@ async fn sendkey_normalized_and_push_tags_saved() {
     assert_eq!(code, 400, "{b}");
     f.stop().await;
 }
+
+#[tokio::test]
+async fn legacy_key_tail_shows_normalized() {
+    let (f, c) = admin_fixture().await;
+    // 旧版本可能存下带 `.send` 的 key：直接写库模拟
+    let db = minimon_server::db::Db::open(&f.db_path).unwrap();
+    db.set_sendkey(Some("sctp1tAbc-9.send")).unwrap();
+    let (_, _, b) = http(f.port, "GET", "/api/admin/alert-settings", Some(&c), None).await;
+    assert_eq!(json(&b)["sendkey_tail"], "bc-9", "{b}");
+    f.stop().await;
+}

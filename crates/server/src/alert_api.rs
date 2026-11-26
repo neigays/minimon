@@ -291,6 +291,8 @@ async fn settings_view(state: &AppState) -> Result<SettingsView, ApiError> {
         push_tags,
         sendkey_set: key.is_some(),
         sendkey_tail: key.map(|k| {
+            // 旧值可能带 `.send` 等：按实际发送用的规范化 key 取末 4 位
+            let k = normalize_sendkey(&k).unwrap_or(k);
             let n = k.chars().count().saturating_sub(4);
             k.chars().skip(n).collect()
         }),
