@@ -33,6 +33,7 @@ pub(super) fn traffic(marks: &mut MarkSet, snap: &Snapshot, fx: &mut Effects) {
             fx.notices.push(Notice::for_node(
                 node,
                 EventKind::Traffic,
+                crate::notify::tag::TRAFFIC,
                 message::traffic(&node.name, level, u.used, quota),
             ));
         }
@@ -72,6 +73,7 @@ pub(super) fn expire(marks: &mut MarkSet, snap: &Snapshot, fx: &mut Effects) {
             fx.notices.push(Notice::for_node(
                 node,
                 EventKind::Expire,
+                crate::notify::tag::EXPIRE,
                 message::expire(&node.name, days, date),
             ));
         }

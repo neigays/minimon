@@ -130,6 +130,25 @@ async function saveKey(clear: boolean) {
     busy.value = false
   }
 }
+const tags = ref<string | null>(null)
+const tagsShown = computed(() => tags.value ?? settings.value?.push_tags ?? '')
+const tagsMsg = ref('')
+const tagsErr = ref('')
+async function saveTags() {
+  tagsErr.value = ''
+  tagsMsg.value = ''
+  if (busy.value) return
+  busy.value = true
+  try {
+    await putSettings({ push_tags: tagsShown.value })
+    tags.value = null
+    tagsMsg.value = '已保存'
+  } catch (e) {
+    tagsErr.value = e instanceof ApiError ? e.message : '保存失败，请重试'
+  } finally {
+    busy.value = false
+  }
+}
 async function sendTest() {
   if (testing.value) return
   testing.value = true
@@ -220,6 +239,16 @@ async function sendTest() {
       <div v-if="keyMsg" class="ok" role="status">{{ keyMsg }}</div>
       <div v-if="testErr" class="err" role="alert">{{ testErr }}</div>
       <div v-if="testMsg" class="ok" role="status">{{ testMsg }}</div>
+      <form class="key" novalidate @submit.prevent="saveTags">
+        <div class="field">
+          <label for="ptags">推送标签（可留空）</label>
+          <input id="ptags" :value="tagsShown" placeholder="minimon|服务器" maxlength="120" autocomplete="off" spellcheck="false" @input="tags = ($event.target as HTMLInputElement).value" />
+        </div>
+        <button class="btn" type="submit" :disabled="busy">保存</button>
+      </form>
+      <p class="muted small">多个用 | 分隔，最多 5 个。推送时会自动附加类型标签：离线 / 上线 / 告警 / 恢复 / 流量 / 到期 / 测试，可在 Server酱³ App 中按标签筛选。</p>
+      <div v-if="tagsErr" class="err" role="alert">{{ tagsErr }}</div>
+      <div v-if="tagsMsg" class="ok" role="status">{{ tagsMsg }}</div>
     </div>
 
     <h3>告警历史</h3>

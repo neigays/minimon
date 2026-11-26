@@ -11,7 +11,9 @@ use crate::alert::model::{
 use crate::auth::{AdminOnly, AppJson};
 use crate::db::now_ms;
 use crate::error::ApiError;
-use crate::notify::{NotifyError, parse_uid, send_test, serverchan_factory};
+use crate::notify::{
+    NotifyError, normalize_push_tags, normalize_sendkey, send_test, serverchan_factory,
+};
 use crate::state::AppState;
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::StatusCode;
@@ -274,16 +276,19 @@ struct SettingsView {
     expire_enabled: bool,
     sendkey_set: bool,
     sendkey_tail: Option<String>,
+    push_tags: String,
 }
 
 async fn settings_view(state: &AppState) -> Result<SettingsView, ApiError> {
     let db = state.db.clone();
-    let (s, key) = blocking(move || Ok((db.alert_settings()?, db.sendkey()?))).await?;
+    let (s, key, push_tags) =
+        blocking(move || Ok((db.alert_settings()?, db.sendkey()?, db.push_tags()?))).await?;
     Ok(SettingsView {
         offline_enabled: s.offline_enabled,
         offline_grace_secs: s.offline_grace_secs,
         traffic_enabled: s.traffic_enabled,
         expire_enabled: s.expire_enabled,
+        push_tags,
         sendkey_set: key.is_some(),
         sendkey_tail: key.map(|k| {
             let n = k.chars().count().saturating_sub(4);
@@ -307,6 +312,7 @@ struct PutSettingsReq {
     traffic_enabled: Option<bool>,
     expire_enabled: Option<bool>,
     sendkey: Option<String>,
+    push_tags: Option<String>,
 }
 
 async fn put_settings(
@@ -319,6 +325,7 @@ async fn put_settings(
         && req.traffic_enabled.is_none()
         && req.expire_enabled.is_none()
         && req.sendkey.is_none()
+        && req.push_tags.is_none()
     {
         return Err(ApiError::bad_request("没有要修改的设置"));
     }
@@ -327,14 +334,20 @@ async fn put_settings(
     {
         return Err(ApiError::bad_request("离线宽限期需为 30 到 3600 秒"));
     }
-    let key = req.sendkey.as_deref().map(str::trim);
-    if let Some(k) = key
-        && !k.is_empty()
-        && parse_uid(k).is_none()
-    {
-        return Err(ApiError::bad_request("SendKey 格式不正确"));
-    }
-    let key = key.map(str::to_string);
+    // 空串 = 清除；否则规范化（去 `.send`、从整段 API 地址提取）并校验。
+    let key = match req.sendkey.as_deref().map(str::trim) {
+        None => None,
+        Some("") => Some(String::new()),
+        Some(k) => {
+            Some(normalize_sendkey(k).ok_or_else(|| ApiError::bad_request("SendKey 格式不正确"))?)
+        }
+    };
+    let push_tags = req
+        .push_tags
+        .as_deref()
+        .map(normalize_push_tags)
+        .transpose()
+        .map_err(ApiError::bad_request)?;
     let db = state.db.clone();
     blocking(move || {
         let cur = db.alert_settings()?;
@@ -345,7 +358,7 @@ async fn put_settings(
             expire_enabled: req.expire_enabled.unwrap_or(cur.expire_enabled),
         };
         let sendkey = key.as_deref().map(|k| Some(k).filter(|k| !k.is_empty()));
-        db.save_alert_settings(&settings, sendkey)
+        db.save_alert_settings(&settings, sendkey, push_tags.as_deref())
     })
     .await?;
     state
@@ -373,6 +386,9 @@ async fn test_send(_: AdminOnly, State(state): State<AppState>) -> Result<Status
             };
             if let Some(k) = key.as_deref().filter(|k| !k.is_empty()) {
                 msg = msg.replace(k, "***");
+                if let Some(n) = normalize_sendkey(k) {
+                    msg = msg.replace(&n, "***");
+                }
             }
             (SendStatus::Failed, Some(msg))
         }

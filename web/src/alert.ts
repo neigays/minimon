@@ -23,6 +23,7 @@ export interface AlertSettings {
   expire_enabled: boolean
   sendkey_set: boolean
   sendkey_tail: string | null
+  push_tags: string
 }
 
 export type EventKind = 'firing' | 'resolved' | 'traffic' | 'expire' | 'test'

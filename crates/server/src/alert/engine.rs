@@ -1,5 +1,6 @@
 //! 告警引擎：输入内存快照，输出状态变更、提醒标记与通知。纯逻辑，无 IO。
 
+use crate::notify::tag;
 use std::collections::{HashMap, HashSet};
 
 use minimon_common::protocol::Report;
@@ -46,6 +47,8 @@ pub struct Notice {
     pub node_id: Option<i64>,
     pub node_name: Option<String>,
     pub kind: EventKind,
+    /// 推送类型标签（`crate::notify::tag`）。
+    pub tag: &'static str,
     pub title: String,
     pub body: String,
 }
@@ -54,12 +57,14 @@ impl Notice {
     pub(super) fn for_node(
         node: &NodeSnap,
         kind: EventKind,
+        tag: &'static str,
         (title, body): (String, String),
     ) -> Self {
         Notice {
             node_id: Some(node.id),
             node_name: Some(node.name.clone()),
             kind,
+            tag,
             title,
             body,
         }
@@ -269,6 +274,7 @@ impl Engine {
                 Transition::Fired { notify: true } => fx.notices.push(Notice::for_node(
                     node,
                     EventKind::Firing,
+                    tag::OFFLINE,
                     message::offline(&node.name, row.since_ms, &snap.tz),
                 )),
                 Transition::Resolved {
@@ -279,6 +285,7 @@ impl Engine {
                     fx.notices.push(Notice::for_node(
                         node,
                         EventKind::Resolved,
+                        tag::ONLINE,
                         message::online(&node.name, snap.now_ms - since_ms),
                     ));
                 }
@@ -350,6 +357,7 @@ fn step_rule(
         Transition::Fired { notify: true } => fx.notices.push(Notice::for_node(
             node,
             EventKind::Firing,
+            tag::FIRING,
             message::firing(
                 rule,
                 &node.name,
@@ -365,6 +373,7 @@ fn step_rule(
         } => fx.notices.push(Notice::for_node(
             node,
             EventKind::Resolved,
+            tag::RESOLVED,
             message::resolved(rule, &node.name, task, value, snap.now_ms - since_ms),
         )),
         _ => {}

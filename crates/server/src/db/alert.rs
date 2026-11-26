@@ -365,6 +365,7 @@ impl Db {
         &self,
         s: &AlertSettings,
         sendkey: Option<Option<&str>>,
+        push_tags: Option<&str>,
     ) -> Result<(), DbError> {
         let b = |v: bool| if v { "1" } else { "0" };
         let grace = s.offline_grace_secs.to_string();
@@ -393,6 +394,9 @@ impl Db {
                     }
                     None => {}
                 }
+                if let Some(t) = push_tags {
+                    up.execute(params!["alert.push_tags", t])?;
+                }
             }
             tx.commit()?;
             Ok(())
@@ -412,6 +416,11 @@ impl Db {
 
     pub fn sendkey(&self) -> Result<Option<String>, DbError> {
         Ok(self.get_setting("alert.sendkey")?.filter(|k| !k.is_empty()))
+    }
+
+    /// 全局推送标签（已规范化），未设置为空串。
+    pub fn push_tags(&self) -> Result<String, DbError> {
+        Ok(self.get_setting("alert.push_tags")?.unwrap_or_default())
     }
 
     pub fn set_sendkey(&self, key: Option<&str>) -> Result<(), DbError> {
@@ -574,7 +583,7 @@ mod tests {
             traffic_enabled: false,
             expire_enabled: true,
         };
-        db.save_alert_settings(&s, None).unwrap();
+        db.save_alert_settings(&s, None, None).unwrap();
         assert_eq!(db.alert_settings().unwrap(), s);
         assert_eq!(db.sendkey().unwrap(), None);
         db.set_sendkey(Some("SCT1tAbc")).unwrap();
@@ -590,16 +599,17 @@ mod tests {
             offline_grace_secs: 90,
             ..AlertSettings::default()
         };
-        db.save_alert_settings(&s, Some(Some("sctp1tAbc"))).unwrap();
+        db.save_alert_settings(&s, Some(Some("sctp1tAbc")), None)
+            .unwrap();
         assert_eq!(db.alert_settings().unwrap(), s);
         assert_eq!(db.sendkey().unwrap().as_deref(), Some("sctp1tAbc"));
         // 不动 SendKey
-        db.save_alert_settings(&AlertSettings::default(), None)
+        db.save_alert_settings(&AlertSettings::default(), None, None)
             .unwrap();
         assert_eq!(db.sendkey().unwrap().as_deref(), Some("sctp1tAbc"));
         assert_eq!(db.alert_settings().unwrap(), AlertSettings::default());
         // 清除
-        db.save_alert_settings(&s, Some(None)).unwrap();
+        db.save_alert_settings(&s, Some(None), None).unwrap();
         assert_eq!(db.sendkey().unwrap(), None);
         assert_eq!(db.alert_settings().unwrap(), s);
     }

@@ -517,3 +517,26 @@ async fn patch_ignores_stale_references() {
     assert_eq!(json(&b)["name"], "x");
     f.stop().await;
 }
+
+#[tokio::test]
+async fn sendkey_normalized_and_push_tags_saved() {
+    let (f, c) = admin_fixture().await;
+    let p = f.port;
+    let put = |b: &'static str| {
+        let c = c.clone();
+        async move { http(p, "PUT", "/api/admin/alert-settings", Some(&c), Some(b)).await }
+    };
+    let (code, _, b) = put(r#"{"sendkey":"https://1.push.ft07.com/send/sctp1tAbc-2.send"}"#).await;
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(json(&b)["sendkey_tail"], "bc-2");
+    let (code, _, _) = put(r#"{"sendkey":"abc"}"#).await;
+    assert_eq!(code, 400);
+    let (code, _, b) = put(r#"{"push_tags":" ops | minimon "}"#).await;
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(json(&b)["push_tags"], "ops|minimon");
+    let (_, _, b) = http(p, "GET", "/api/admin/alert-settings", Some(&c), None).await;
+    assert_eq!(json(&b)["push_tags"], "ops|minimon");
+    let (code, _, b) = put(r#"{"push_tags":"a|b|c|d|e|f"}"#).await;
+    assert_eq!(code, 400, "{b}");
+    f.stop().await;
+}

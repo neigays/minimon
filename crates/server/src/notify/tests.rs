@@ -12,13 +12,30 @@ fn notice(title: &str, body: &str) -> Notice {
         node_id: None,
         node_name: None,
         kind: EventKind::Firing,
+        tag: tag::FIRING,
         title: title.into(),
         body: body.into(),
     }
 }
 
+fn tagged(t: &'static str) -> Notice {
+    Notice {
+        tag: t,
+        ..notice("T", "B")
+    }
+}
+
 /// 极简 HTTP/1.1 mock：应答固定 JSON，并把每个请求（头+体）送入通道。
 async fn mock(resp: &'static str) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    mock_with("200 OK", "application/json", resp).await
+}
+
+/// 可指定状态行与 content-type 的 mock。
+async fn mock_with(
+    status: &'static str,
+    ctype: &'static str,
+    resp: &'static str,
+) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/send/sctp1tkey.send", l.local_addr().unwrap());
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -54,7 +71,7 @@ async fn mock(resp: &'static str) -> (String, tokio::sync::mpsc::UnboundedReceiv
                 }
                 let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
                 let out = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    "HTTP/1.1 {status}\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                     resp.len(),
                     resp
                 );
@@ -115,14 +132,14 @@ fn bad_sendkey_is_config_error() {
 async fn serverchan_posts_form_and_checks_code() {
     let (url, mut rx) = mock(r#"{"code":0}"#).await;
     let sc = ServerChan::with_endpoint(url).unwrap();
-    sc.send("hi", "body").await.unwrap();
+    sc.send("hi", "body", "").await.unwrap();
     let req = rx.recv().await.unwrap();
     assert!(req.starts_with("POST "));
     assert!(req.contains("title=") && req.contains("desp="));
 
     let (url, _rx) = mock(r#"{"code":40001,"message":"bad"}"#).await;
     let sc = ServerChan::with_endpoint(url).unwrap();
-    match sc.send("hi", "b").await {
+    match sc.send("hi", "b", "").await {
         Err(NotifyError::Api { code: 40001, .. }) => {}
         other => panic!("{other:?}"),
     }
@@ -132,7 +149,7 @@ async fn serverchan_posts_form_and_checks_code() {
 async fn title_truncated_to_32_chars() {
     let (url, mut rx) = mock(r#"{"code":0}"#).await;
     let sc = ServerChan::with_endpoint(url).unwrap();
-    sc.send(&"汉".repeat(40), "b").await.unwrap();
+    sc.send(&"汉".repeat(40), "b", "").await.unwrap();
     let req = rx.recv().await.unwrap();
     assert_eq!(form_value(&req, "title").chars().count(), 32);
 }
@@ -144,9 +161,107 @@ async fn http_error_hides_sendkey() {
     drop(l);
     let sc = ServerChan::with_endpoint(format!("http://127.0.0.1:{port}/send/sctp9tSECRET.send"))
         .unwrap();
-    let e = sc.send("t", "b").await.unwrap_err();
+    let e = sc.send("t", "b", "").await.unwrap_err();
     assert!(!e.to_string().contains("SECRET"), "{e}");
     assert!(!format!("{e:?}").contains("SECRET"));
+}
+
+#[test]
+fn normalize_sendkey_cases() {
+    for raw in [
+        " sctp123tAbc-1 ",
+        "sctp123tAbc-1.send",
+        "https://123.push.ft07.com/send/sctp123tAbc-1.send?title=x",
+    ] {
+        assert_eq!(
+            normalize_sendkey(raw).as_deref(),
+            Some("sctp123tAbc-1"),
+            "{raw}"
+        );
+    }
+    for raw in ["sct123", "sctp123tA.b", "", "sctp123t"] {
+        assert_eq!(normalize_sendkey(raw), None, "{raw}");
+    }
+}
+
+#[tokio::test]
+async fn non_json_error_redacts_key() {
+    let (url, _rx) = mock_with(
+        "400 Bad Request",
+        "text/plain",
+        "bad sctp9t_key-1 Invalid URL",
+    )
+    .await;
+    let sc = ServerChan::with_endpoint(url)
+        .unwrap()
+        .redacting("sctp9t_key-1");
+    let e = sc.send("t", "b", "").await.unwrap_err().to_string();
+    assert!(e.starts_with("推送服务返回 HTTP 400："), "{e}");
+    assert!(e.contains("Invalid URL"), "{e}");
+    assert!(!e.contains("sctp9t_key-1"), "{e}");
+}
+
+#[tokio::test]
+async fn api_error_reads_error_field() {
+    let (url, _rx) = mock(r#"{"error":"sendkey not found","code":10003}"#).await;
+    let sc = ServerChan::with_endpoint(url).unwrap();
+    match sc.send("t", "b", "").await {
+        Err(NotifyError::Api {
+            code: 10003,
+            message,
+        }) => assert_eq!(message, "sendkey not found"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn serverchan_sends_tags_field() {
+    let (url, mut rx) = mock(r#"{"code":0}"#).await;
+    let sc = ServerChan::with_endpoint(url.clone()).unwrap();
+    sc.send("t", "b", "离线|minimon").await.unwrap();
+    let req = rx.recv().await.unwrap();
+    assert_eq!(form_value(&req, "tags"), "离线|minimon");
+    sc.send("t", "b", "").await.unwrap();
+    let req = rx.recv().await.unwrap();
+    assert!(!req.contains("tags="), "{req}");
+}
+
+#[test]
+fn tags_for_merges_in_order() {
+    let ns = [
+        tagged(tag::TRAFFIC),
+        tagged(tag::OFFLINE),
+        tagged(tag::TRAFFIC),
+    ];
+    assert_eq!(tags_for("minimon|离线", &ns), "minimon|离线|流量");
+    assert_eq!(tags_for("", &[tagged(tag::TEST)]), "测试");
+}
+
+#[test]
+fn push_tags_blank_means_none() {
+    assert_eq!(normalize_push_tags(" | |"), Ok(String::new()));
+    assert_eq!(normalize_push_tags(" a | b |a"), Ok("a|b".into()));
+    assert!(normalize_push_tags("a|b|c|d|e|f").is_err());
+    assert!(normalize_push_tags(&"x".repeat(17)).is_err());
+    assert!(normalize_push_tags(&"汉".repeat(16)).is_ok());
+}
+
+#[tokio::test]
+async fn stored_key_with_suffix_still_sends() {
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    db.set_sendkey(Some("sctp1tAbc.send")).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let s2 = seen.clone();
+    let make: MakeNotifier = Arc::new(move |k| {
+        s2.lock().unwrap().push(k.to_string());
+        Ok(Box::new(Counting {
+            calls: Arc::new(AtomicUsize::new(0)),
+            titles: Arc::new(Mutex::new(Vec::new())),
+            ok: true,
+        }) as Box<dyn Notifier>)
+    });
+    send_test(&db, &make).await.unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec!["sctp1tAbc".to_string()]);
 }
 
 #[test]
@@ -173,7 +288,12 @@ struct Counting {
 }
 
 impl Notifier for Counting {
-    fn send<'a>(&'a self, title: &'a str, _b: &'a str) -> BoxFuture<'a, Result<(), NotifyError>> {
+    fn send<'a>(
+        &'a self,
+        title: &'a str,
+        _b: &'a str,
+        _tags: &'a str,
+    ) -> BoxFuture<'a, Result<(), NotifyError>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.titles.lock().unwrap().push(title.to_string());
         let ok = self.ok;

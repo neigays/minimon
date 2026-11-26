@@ -102,17 +102,22 @@ async fn deliver(
     notices: Vec<Notice>,
 ) {
     let d = db.clone();
-    let key = match tokio::task::spawn_blocking(move || d.sendkey()).await {
-        Ok(Ok(k)) => k,
-        _ => {
+    let target = match tokio::task::spawn_blocking(move || super::load_target(&d)).await {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "通知配置无效");
+            return mark(db, ids, SendStatus::Failed).await;
+        }
+        Err(_) => {
             tracing::error!("读取 SendKey 失败");
             return mark(db, ids, SendStatus::Failed).await;
         }
     };
-    let Some(key) = key else {
+    let Some((key, global)) = target else {
         return mark(db, ids, SendStatus::Skipped).await;
     };
-    let status = match send_with_retry(make, &key, retry, &notices).await {
+    let tags = super::tags_for(&global, &notices);
+    let status = match send_with_retry(make, &key, &tags, retry, &notices).await {
         Ok(()) => SendStatus::Ok,
         Err(e) => {
             tracing::warn!(error = %e, count = ids.len(), "通知发送失败");
@@ -125,18 +130,19 @@ async fn deliver(
 async fn send_with_retry(
     make: &MakeNotifier,
     key: &str,
+    tags: &str,
     retry: [Duration; 2],
     notices: &[Notice],
 ) -> Result<(), NotifyError> {
     let notifier = make(key)?;
     let (title, body) = merge(notices);
-    let mut res = notifier.send(&title, &body).await;
+    let mut res = notifier.send(&title, &body, tags).await;
     for wait in retry {
         if res.is_ok() {
             break;
         }
         tokio::time::sleep(wait).await;
-        res = notifier.send(&title, &body).await;
+        res = notifier.send(&title, &body, tags).await;
     }
     res
 }
