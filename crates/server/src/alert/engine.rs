@@ -186,6 +186,8 @@ impl Engine {
     }
 
     fn eval_rules(&mut self, snap: &Snapshot, fx: &mut Effects) {
+        // 本轮应存在的键（离线节点的键也算，cond = None 冻结）
+        let mut seen = HashSet::new();
         for rule in self.rules.iter().filter(|r| r.enabled) {
             let nodes = snap
                 .nodes
@@ -203,15 +205,26 @@ impl Engine {
                         let value = report.and(snap.probes.get(&(node.id, t.id))).and_then(|s| {
                             probe_value(rule.metric, s, i64::from(t.interval_secs), snap.now_ms)
                         });
-                        step_rule(&mut self.tracked, rule, node, t.id, value, snap, fx);
+                        seen.insert(step_rule(
+                            &mut self.tracked,
+                            rule,
+                            node,
+                            t.id,
+                            value,
+                            snap,
+                            fx,
+                        ));
                     }
                 } else {
                     let value = report
                         .and_then(|r| host_value(rule.metric, r, node.mem_total, node.swap_total));
-                    step_rule(&mut self.tracked, rule, node, 0, value, snap, fx);
+                    seen.insert(step_rule(&mut self.tracked, rule, node, 0, value, snap, fx));
                 }
             }
         }
+        // 未生成的规则键（任务被删 / 不再适用、节点已不在快照）：静默清除
+        let stale = self.drop_keys(|k| k.kind == StateKind::Rule && !seen.contains(k));
+        fx.deletes.extend(stale);
     }
 
     fn eval_offline(&mut self, snap: &Snapshot, fx: &mut Effects) {
@@ -257,11 +270,11 @@ impl Engine {
                     notify: true,
                     since_ms,
                 } => {
-                    let from = row.fired_ms.unwrap_or(since_ms);
+                    // 离线时长从 pending 起点（max(最后上报, server 启动)）算起
                     fx.notices.push(Notice::for_node(
                         node,
                         EventKind::Resolved,
-                        message::online(&node.name, snap.now_ms - from),
+                        message::online(&node.name, snap.now_ms - since_ms),
                     ));
                 }
                 _ => {}
@@ -298,7 +311,7 @@ fn step_rule(
     value: Option<f64>,
     snap: &Snapshot,
     fx: &mut Effects,
-) {
+) -> AlertKey {
     let key = AlertKey {
         kind: StateKind::Rule,
         rule_id: rule.id,
@@ -307,7 +320,7 @@ fn step_rule(
     };
     let cond = value.map(|v| rule.op.holds(v, rule.threshold));
     if cond != Some(true) && !tracked.contains_key(&key) {
-        return;
+        return key;
     }
     let t = tracked.entry(key).or_default();
     let tr = step(
@@ -321,7 +334,7 @@ fn step_rule(
         rule.cooldown_secs.saturating_mul(1000),
     );
     let Some(row) = t.row.as_ref().filter(|_| tr != Transition::None) else {
-        return;
+        return key;
     };
     fx.upserts.push(row.clone());
     let task = (task_id != 0)
@@ -351,6 +364,7 @@ fn step_rule(
         )),
         _ => {}
     }
+    key
 }
 
 #[cfg(test)]
@@ -537,7 +551,7 @@ pub(super) mod tests {
         let n = &fx.notices[0];
         assert_eq!(n.kind, EventKind::Resolved);
         assert_eq!(n.title, "【上线】节点1");
-        assert!(n.body.contains("2 分钟"), "{}", n.body);
+        assert!(n.body.contains("5 分钟"), "{}", n.body);
         assert!(e.active().is_empty());
     }
 
@@ -685,11 +699,13 @@ pub(super) mod tests {
         e.evaluate(&s);
         s.now_ms = 10_000;
         assert_eq!(e.evaluate(&s).notices.len(), 1);
+        // 绑定任务被删：键静默清除
         let fx = e.evaluate(&probe_snap(20_000));
         assert!(fx.upserts.is_empty() && fx.notices.is_empty());
-        r.probe_task_id = None;
-        assert_eq!(e.set_rules(vec![r]), vec![rule_key(1, 1, 9)]);
+        assert_eq!(fx.deletes, vec![rule_key(1, 1, 9)]);
         assert!(e.active().is_empty());
+        r.probe_task_id = None;
+        assert!(e.set_rules(vec![r]).is_empty());
     }
 
     #[test]
@@ -734,6 +750,46 @@ pub(super) mod tests {
         assert_eq!(del, vec![offline_key(1), offline_key(2)]);
         assert!(e.active().is_empty());
         assert!(e.evaluate(&snap(200_000, vec![node(1, None)])).is_empty());
+    }
+
+    #[test]
+    fn unbound_task_removed_clears_key_silently() {
+        let mut e = engine(vec![rule(1, Metric::ProbeLatency, 100.0)]);
+        e.evaluate(&probe_snap(0));
+        assert_eq!(e.evaluate(&probe_snap(10_000)).notices.len(), 2);
+        let mut s = probe_snap(20_000);
+        s.tasks.retain(|t| t.id != 2);
+        s.probes.remove(&(1, 2));
+        let fx = e.evaluate(&s);
+        assert!(fx.notices.is_empty() && fx.upserts.is_empty());
+        assert_eq!(fx.deletes, vec![rule_key(1, 1, 2)]);
+        assert_eq!(
+            e.active().iter().map(|r| r.key).collect::<Vec<_>>(),
+            vec![rule_key(1, 1, 1)]
+        );
+    }
+
+    #[test]
+    fn offline_node_keeps_probe_keys() {
+        let mut e = engine(vec![rule(1, Metric::ProbeLatency, 100.0)]);
+        e.evaluate(&probe_snap(0));
+        e.evaluate(&probe_snap(10_000));
+        let mut s = probe_snap(20_000);
+        s.nodes[0].online = false;
+        let fx = e.evaluate(&s);
+        assert!(fx.deletes.is_empty() && fx.notices.is_empty());
+        assert_eq!(e.active().len(), 2);
+    }
+
+    #[test]
+    fn node_missing_from_snapshot_clears_rule_keys_silently() {
+        let mut e = engine(vec![rule(1, Metric::Cpu, 90.0)]);
+        fire_cpu(&mut e);
+        let fx = e.evaluate(&snap(20_000, Vec::new()));
+        assert!(fx.notices.is_empty() && fx.upserts.is_empty());
+        assert_eq!(fx.deletes, vec![rule_key(1, 1, 0)]);
+        assert!(e.active().is_empty());
+        assert!(e.evaluate(&snap(30_000, Vec::new())).is_empty());
     }
 
     #[test]

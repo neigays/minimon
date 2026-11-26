@@ -121,7 +121,7 @@ pub fn online(node: &str, offline_for_ms: i64) -> (String, String) {
     (
         format!("【上线】{node}"),
         format!(
-            "节点「{node}」已恢复上线，离线告警持续了 {}。",
+            "节点「{node}」已恢复上线，离线时长 {}。",
             duration(offline_for_ms)
         ),
     )
