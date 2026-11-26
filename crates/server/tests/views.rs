@@ -335,8 +335,18 @@ async fn agent_ip_recorded() {
     let v = wait_nodes(f.port, Some(&cookie), |v| v[0]["ip"].is_null()).await;
     assert!(v[0]["ip"].is_null());
     let _a = agent(f.port, &toks[0].1).await;
-    let v = wait_nodes(f.port, Some(&cookie), |v| v[0]["ip"] == "127.0.0.1").await;
-    assert_eq!(v[0]["ip"], "127.0.0.1");
+    // 来源地址照常记录，但 127.0.0.1 不是公网地址，界面不拿它兜底
+    let v = wait_nodes(f.port, Some(&cookie), |v| v[0]["online"] == true).await;
+    assert!(v[0]["ip"].is_null());
+    let id = v[0]["id"].as_i64().unwrap();
+    let db = Db::open(&f.db_path).unwrap();
+    let rec = db
+        .list_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|n| n.id == id)
+        .unwrap();
+    assert_eq!(rec.last_ip.as_deref(), Some("127.0.0.1"));
 }
 
 #[tokio::test]

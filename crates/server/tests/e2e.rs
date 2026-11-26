@@ -184,7 +184,8 @@ async fn admin_flow_end_to_end() {
             if let Some(n) = find(&v, id)
                 && n["online"] == true
                 && n["latest"].is_object()
-                && n["ip"].is_string()
+                // 管理员视图带 ip 字段；本机 127.0.0.1 属非公网地址，值为 null
+                && n.get("ip").is_some()
             {
                 return;
             }

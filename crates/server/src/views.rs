@@ -180,7 +180,7 @@ fn admin_view(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> AdminNo
         hostname: info.as_ref().map(|h| h.hostname.clone()),
         kernel: info.as_ref().map(|h| h.kernel.clone()),
         agent_version: info.as_ref().map(|h| h.agent_version.clone()),
-        ip: n.last_ip.clone(),
+        ip: public_fallback_ip(n.last_ip.as_deref()),
         ipv4: n.ipv4.clone(),
         ipv6: n.ipv6.clone(),
         note: n.note.clone(),
@@ -198,9 +198,64 @@ fn admin_view(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> AdminNo
     }
 }
 
+/// 连接来源地址作为 agent 未上报公网 IP 时的兜底；内网、Docker 网关等非公网地址
+/// 没有参考价值（server 在 Docker / 反代后面时永远是网关），不显示。
+fn public_fallback_ip(ip: Option<&str>) -> Option<String> {
+    use std::net::IpAddr;
+    let raw = ip?;
+    let addr: IpAddr = raw.parse().ok()?;
+    let addr = match addr {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(addr, IpAddr::V4),
+        v4 => v4,
+    };
+    let public = match addr {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            let cgnat = a == 100 && (64..128).contains(&b);
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || cgnat)
+        }
+        IpAddr::V6(v6) => {
+            let seg = v6.segments()[0];
+            let ula = seg & 0xfe00 == 0xfc00;
+            let link_local = seg & 0xffc0 == 0xfe80;
+            !(v6.is_loopback() || v6.is_unspecified() || ula || link_local)
+        }
+    };
+    public.then(|| raw.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::merge_last_seen;
+    use super::{merge_last_seen, public_fallback_ip};
+
+    #[test]
+    fn fallback_ip_hides_private_addresses() {
+        // Docker 网关、内网、回环、链路本地、CGNAT、IPv6 ULA / 链路本地都不显示
+        for ip in [
+            "192.168.158.1",
+            "172.17.0.1",
+            "10.0.0.5",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:192.168.1.1",
+            "not-an-ip",
+        ] {
+            assert_eq!(public_fallback_ip(Some(ip)), None, "{ip}");
+        }
+        for ip in ["203.0.113.5", "2001:db8::1", "::ffff:8.8.8.8"] {
+            assert_eq!(public_fallback_ip(Some(ip)).as_deref(), Some(ip), "{ip}");
+        }
+        assert_eq!(public_fallback_ip(None), None);
+    }
 
     #[test]
     fn last_seen_is_clamped_to_server_time() {
