@@ -56,21 +56,6 @@ fn open_db(config: Option<&std::path::Path>) -> Result<(ServerConfig, Db)> {
     Ok((cfg, db))
 }
 
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        if let Ok(mut term) = signal(SignalKind::terminate()) {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = term.recv() => {}
-            }
-            return;
-        }
-    }
-    let _ = tokio::signal::ctrl_c().await;
-}
-
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     match Cli::parse().cmd {
@@ -80,7 +65,11 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("创建 tokio 运行时失败")?
-                .block_on(minimon_server::serve(cfg, shutdown_signal()))?;
+                // 在运行时内、任何初始化之前注册退出信号（需要运行时上下文）
+                .block_on(async {
+                    let shutdown = minimon_server::signal::shutdown_signal();
+                    minimon_server::serve(cfg, shutdown).await
+                })?;
         }
         Cmd::Admin { config, cmd } => {
             let (_, db) = open_db(config.as_deref())?;

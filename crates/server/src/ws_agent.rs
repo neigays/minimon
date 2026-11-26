@@ -8,7 +8,9 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, header};
 use axum::response::Response;
-use minimon_common::protocol::{AgentMsg, ErrorCode, Hello, ProbeResult, ServerMsg, check_version};
+use minimon_common::protocol::{
+    AgentMsg, ErrorCode, Hello, NetInfo, ProbeResult, ServerMsg, check_version,
+};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
@@ -323,6 +325,7 @@ async fn run(
                                 tracing::debug!(node_id, task_id, "丢弃无效或不属于该节点的探测结果");
                             }
                         }
+                        Ok(AgentMsg::NetInfo(n)) => handle_netinfo(state, node_id, n).await,
                         Ok(_) => {}
                         Err(e) => tracing::debug!(node_id, error = %e, "忽略无法解析的消息"),
                     },
@@ -331,6 +334,54 @@ async fn run(
                 }
             }
         }
+    }
+}
+
+/// 丢弃非法字段：ipv4/ipv6 必须能解析为对应族；country 必须是 2 位 ASCII 字母（转大写）。
+pub(crate) fn sanitize_netinfo(n: NetInfo) -> NetInfo {
+    let ip_of = |s: Option<String>, v4: bool| {
+        s.filter(|s| match s.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(_)) => v4,
+            Ok(std::net::IpAddr::V6(_)) => !v4,
+            Err(_) => false,
+        })
+    };
+    NetInfo {
+        ipv4: ip_of(n.ipv4, true),
+        ipv6: ip_of(n.ipv6, false),
+        country: n
+            .country
+            .filter(|c| c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic()))
+            .map(|c| c.to_ascii_uppercase()),
+    }
+}
+
+/// 保存 NetInfo 并同步缓存与 live；全部字段非法时忽略。
+async fn handle_netinfo(state: &AppState, node_id: i64, n: NetInfo) {
+    let n = sanitize_netinfo(n);
+    if n == NetInfo::default() {
+        tracing::debug!(node_id, "NetInfo 无有效字段，忽略");
+        return;
+    }
+    let db = state.db.clone();
+    let saved = n.clone();
+    match tokio::task::spawn_blocking(move || db.set_netinfo(node_id, &saved)).await {
+        Ok(Ok(())) => {
+            state.modify_node(node_id, move |node| {
+                if n.ipv4.is_some() {
+                    node.ipv4 = n.ipv4;
+                }
+                if n.ipv6.is_some() {
+                    node.ipv6 = n.ipv6;
+                }
+                if n.country.is_some() {
+                    node.country = n.country;
+                }
+            });
+            state.publish_resync();
+        }
+        Ok(Err(e)) => tracing::warn!(node_id, error = %e, "保存 NetInfo 失败"),
+        Err(e) => tracing::warn!(node_id, error = %e, "保存 NetInfo 任务失败"),
     }
 }
 
@@ -460,5 +511,35 @@ mod tests {
             &mut nm
         ));
         assert_eq!(state.latest_probe(node.id)[0].avg_ms, Some(5.0));
+    }
+}
+
+#[cfg(test)]
+mod netinfo_tests {
+    use super::*;
+
+    fn ni(v4: &str, v6: &str, c: &str) -> NetInfo {
+        let o = |s: &str| (!s.is_empty()).then(|| s.to_string());
+        NetInfo {
+            ipv4: o(v4),
+            ipv6: o(v6),
+            country: o(c),
+        }
+    }
+
+    #[test]
+    fn sanitize_cases() {
+        assert_eq!(
+            sanitize_netinfo(ni("1.2.3.4", "2001:db8::1", "us")),
+            ni("1.2.3.4", "2001:db8::1", "US")
+        );
+        assert_eq!(
+            sanitize_netinfo(ni("::1", "1.2.3.4", "usa")),
+            NetInfo::default()
+        );
+        for bad in ["中国", "X1", "u", ""] {
+            assert_eq!(sanitize_netinfo(ni("", "", bad)).country, None, "{bad}");
+        }
+        assert_eq!(sanitize_netinfo(ni("1.2.3", "", "")).ipv4, None);
     }
 }

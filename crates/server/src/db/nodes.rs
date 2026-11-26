@@ -61,11 +61,15 @@ pub struct Node {
     pub alert_offline: bool,
     /// 规范化后的标签串（见 `crate::tags`）。
     pub tags: String,
+    /// agent 自查的公网地址与国家（大写 2 位代码）。
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
+    pub country: Option<String>,
 }
 
 const NODE_COLS: &str = "id, name, sort, hidden, info_json, grp, region, note, last_ip, \
      last_seen_ms, created_ms, traffic_quota, traffic_reset_day, traffic_mode, expire_date, \
-     alert_offline, tags";
+     alert_offline, tags, ipv4, ipv6, country";
 
 fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -134,6 +138,9 @@ fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
         expire_date: r.get(14)?,
         alert_offline: r.get::<_, i64>(15)? != 0,
         tags: r.get(16)?,
+        ipv4: r.get(17)?,
+        ipv6: r.get(18)?,
+        country: r.get(19)?,
     })
 }
 
@@ -199,6 +206,9 @@ impl Db {
             expire_date: None,
             alert_offline: true,
             tags: String::new(),
+            ipv4: None,
+            ipv6: None,
+            country: None,
         };
         Ok((node, token))
     }
@@ -235,6 +245,22 @@ impl Db {
                 ],
             )?;
             Ok(n > 0)
+        })
+    }
+
+    /// 保存 agent 上报的公网信息（已净化）；None 字段保持原值。
+    pub fn set_netinfo(
+        &self,
+        id: i64,
+        n: &minimon_common::protocol::NetInfo,
+    ) -> Result<(), DbError> {
+        self.write(|c| {
+            c.execute(
+                "UPDATE nodes SET ipv4 = coalesce(?1, ipv4), ipv6 = coalesce(?2, ipv6), \
+                 country = coalesce(?3, country) WHERE id = ?4",
+                params![n.ipv4, n.ipv6, n.country, id],
+            )?;
+            Ok(())
         })
     }
 
@@ -321,6 +347,9 @@ impl Db {
             expire_date: None,
             alert_offline: true,
             tags: String::new(),
+            ipv4: None,
+            ipv6: None,
+            country: None,
         };
         Ok((node, token))
     }

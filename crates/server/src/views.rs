@@ -43,7 +43,11 @@ pub struct AdminNode {
     pub hostname: Option<String>,
     pub kernel: Option<String>,
     pub agent_version: Option<String>,
+    /// 连接来源地址（反代 / Docker 后可能是内网地址）。
     pub ip: Option<String>,
+    /// agent 自查的公网地址。
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
     pub note: String,
     pub created_ms: i64,
     /// 已存的计费配置（与用量缓存无关，编辑表单以此为准）。
@@ -116,7 +120,8 @@ fn base(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> (PublicNode, 
         online: snap.online.contains(&n.id),
         sort: n.sort,
         group: n.group.clone(),
-        region: n.region.clone(),
+        // 显示用地区：agent 上报的国家优先，旧的手填地区作过渡
+        region: n.country.clone().unwrap_or_else(|| n.region.clone()),
         os: info.as_ref().map(|h| h.os.clone()),
         arch: info.as_ref().map(|h| h.arch.clone()),
         cpu_model: info.as_ref().map(|h| h.cpu_model.clone()),
@@ -176,6 +181,8 @@ fn admin_view(state: &AppState, n: &crate::db::Node, snap: &Snapshot) -> AdminNo
         kernel: info.as_ref().map(|h| h.kernel.clone()),
         agent_version: info.as_ref().map(|h| h.agent_version.clone()),
         ip: n.last_ip.clone(),
+        ipv4: n.ipv4.clone(),
+        ipv6: n.ipv6.clone(),
         note: n.note.clone(),
         created_ms: n.created_ms,
         traffic_quota: n.traffic_quota,

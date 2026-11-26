@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 /// 协议大版本。不兼容改动必须递增。
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
+/// server 仍接受的最低版本：v2 只新增了 `NetInfo` 消息，v1 agent 不发它即可。
+pub const MIN_PROTOCOL_VERSION: u32 = 1;
 
 /// agent 发往 server 的消息。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -12,6 +14,7 @@ pub enum AgentMsg {
     Hello(Hello),
     Report(Report),
     ProbeResult(ProbeResult),
+    NetInfo(NetInfo),
 }
 
 /// server 发往 agent 的消息。
@@ -98,9 +101,20 @@ pub struct ProbeResult {
     pub error: Option<String>,
 }
 
-/// 校验对端协议版本。
+/// agent 自查的公网地址与国家（ISO 3166-1 alpha-2）；查不到的字段为 None。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetInfo {
+    #[serde(default)]
+    pub ipv4: Option<String>,
+    #[serde(default)]
+    pub ipv6: Option<String>,
+    #[serde(default)]
+    pub country: Option<String>,
+}
+
+/// 校验对端协议版本（接受 `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`）。
 pub fn check_version(v: u32) -> Result<(), ErrorCode> {
-    if v == PROTOCOL_VERSION {
+    if (MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&v) {
         Ok(())
     } else {
         Err(ErrorCode::IncompatibleVersion)
@@ -161,10 +175,27 @@ mod tests {
 
     #[test]
     fn version_check() {
-        assert!(check_version(PROTOCOL_VERSION).is_ok());
+        assert_eq!(PROTOCOL_VERSION, 2);
+        assert!(check_version(1).is_ok());
+        assert!(check_version(2).is_ok());
+        for bad in [0, 3] {
+            assert_eq!(check_version(bad), Err(ErrorCode::IncompatibleVersion));
+        }
+    }
+
+    #[test]
+    fn net_info_roundtrip_and_defaults() {
+        let msg = AgentMsg::NetInfo(NetInfo {
+            ipv4: Some("203.0.113.5".into()),
+            ipv6: None,
+            country: Some("JP".into()),
+        });
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.starts_with(r#"{"type":"net_info""#), "{s}");
+        assert_eq!(serde_json::from_str::<AgentMsg>(&s).unwrap(), msg);
         assert_eq!(
-            check_version(PROTOCOL_VERSION + 1),
-            Err(ErrorCode::IncompatibleVersion)
+            serde_json::from_str::<AgentMsg>(r#"{"type":"net_info"}"#).unwrap(),
+            AgentMsg::NetInfo(NetInfo::default())
         );
     }
 }

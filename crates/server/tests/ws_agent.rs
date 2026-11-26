@@ -259,7 +259,7 @@ async fn disconnect_emits_offline() {
 async fn incompatible_version_with_unparseable_hello_shape() {
     let fx = start().await;
     let mut ws = connect(fx.port, &fx.token).await;
-    ws.send(Message::text(r#"{"type":"hello","v":2}"#))
+    ws.send(Message::text(r#"{"type":"hello","v":3}"#))
         .await
         .unwrap();
     assert!(matches!(
@@ -350,4 +350,15 @@ async fn skewed_report_is_stored_with_server_time() {
         (stored - now).abs() < 2_000,
         "入库 ts 应为 server 时间，实际 {stored}"
     );
+}
+
+#[tokio::test]
+async fn v1_agent_still_accepted() {
+    let fx = start().await;
+    let mut ws = connect(fx.port, &fx.token).await;
+    send(&mut ws, &AgentMsg::Hello(hello(1))).await;
+    assert!(matches!(
+        recv(&mut ws).await,
+        Some(ServerMsg::Welcome { .. })
+    ));
 }

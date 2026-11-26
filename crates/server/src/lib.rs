@@ -17,6 +17,7 @@ pub mod probe;
 mod probe_api;
 mod probe_history;
 mod rollup;
+pub mod signal;
 pub mod state;
 mod tags;
 pub mod traffic;

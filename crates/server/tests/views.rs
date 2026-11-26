@@ -4,7 +4,7 @@ mod common;
 
 use common::{Fixture, login, start_at};
 use futures_util::{SinkExt, StreamExt};
-use minimon_common::protocol::{AgentMsg, Hello, PROTOCOL_VERSION, Report};
+use minimon_common::protocol::{AgentMsg, Hello, NetInfo, PROTOCOL_VERSION, Report};
 use minimon_server::db::Db;
 use serde_json::Value;
 use std::time::Duration;
@@ -36,6 +36,8 @@ const PUBLIC_KEYS: &[&str] = &[
 ];
 const ADMIN_EXTRA: &[&str] = &[
     "hidden",
+    "ipv4",
+    "ipv6",
     "tags_raw",
     "hostname",
     "kernel",
@@ -433,4 +435,64 @@ async fn live_origin_accepts_public_url_host() {
     let mut w = live_origin(f.port, Some(&cookie), Some("https://mon.example.com")).await;
     let snap = next_json(&mut w).await;
     assert_eq!(snap["nodes"].as_array().unwrap().len(), 2);
+}
+
+async fn send_netinfo(ws: &mut Ws, n: NetInfo) {
+    let t = serde_json::to_string(&AgentMsg::NetInfo(n)).unwrap();
+    ws.send(Message::text(t)).await.unwrap();
+}
+
+#[tokio::test]
+async fn netinfo_saved_and_shown() {
+    let (dir, toks) = seed(1, false);
+    let f = boot(dir).await;
+    let mut a = agent(f.port, &toks[0].1).await;
+    send_netinfo(
+        &mut a,
+        NetInfo {
+            ipv4: Some("203.0.113.5".into()),
+            ipv6: Some("2001:db8::5".into()),
+            country: Some("jp".into()),
+        },
+    )
+    .await;
+    let cookie = login(f.port).await;
+    let v = wait_nodes(f.port, Some(&cookie), |v| v[0]["ipv4"] == "203.0.113.5").await;
+    assert_eq!(v[0]["ipv6"], "2001:db8::5");
+    assert_eq!(v[0]["region"], "JP");
+    // guest_sees_country_not_ip
+    let (_, body) = nodes(f.port, None).await;
+    assert!(
+        !body.contains("203.0.113.5") && !body.contains("2001:db8::5"),
+        "{body}"
+    );
+    let g: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(g[0]["region"], "JP");
+    assert_eq!(keys(&g[0]), sorted(PUBLIC_KEYS));
+    let mut l = live(f.port, None).await.unwrap();
+    let snap = next_json(&mut l).await;
+    assert_eq!(keys(&snap["nodes"][0]), sorted(PUBLIC_KEYS));
+    assert_eq!(snap["nodes"][0]["region"], "JP");
+}
+
+#[tokio::test]
+async fn netinfo_invalid_fields_dropped() {
+    let (dir, toks) = seed(1, false);
+    let f = boot(dir).await;
+    let mut a = agent(f.port, &toks[0].1).await;
+    send_netinfo(
+        &mut a,
+        NetInfo {
+            ipv4: Some("::1".into()),
+            ipv6: Some("1.2.3.4".into()),
+            country: Some("usa".into()),
+        },
+    )
+    .await;
+    // 连接仍在：随后的上报照常被接受
+    send_report(&mut a, report(now_ms(), 7.0)).await;
+    let cookie = login(f.port).await;
+    let v = wait_nodes(f.port, Some(&cookie), |v| v[0]["latest"].is_object()).await;
+    assert!(v[0]["ipv4"].is_null() && v[0]["ipv6"].is_null(), "{v}");
+    assert_eq!(v[0]["region"], "");
 }
