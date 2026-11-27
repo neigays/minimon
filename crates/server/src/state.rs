@@ -192,6 +192,11 @@ impl AppState {
         let _ = self.ingest.flush().await;
     }
 
+    /// 与 `reload_nodes` 互斥的锁：在「写库 + 改缓存」期间持有，防止被并发的整表重载用旧数据覆盖。
+    pub(crate) async fn reload_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.reload_lock.lock().await
+    }
+
     /// 从库重新加载节点缓存（阻塞 IO 放到 spawn_blocking，锁不跨 await）。
     pub(crate) async fn reload_nodes(&self) -> Result<(), DbError> {
         // 锁跨 读库 + 写缓存：后开始的重载一定读到不早于先开始者的数据。

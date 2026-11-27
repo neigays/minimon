@@ -363,6 +363,12 @@ async fn handle_netinfo(state: &AppState, node_id: i64, n: NetInfo) {
         tracing::debug!(node_id, "NetInfo 无有效字段，忽略");
         return;
     }
+    // 与 reload_nodes 串行：避免并发的整表重载读到写库前的旧值，再覆盖掉这里刚写进缓存的地址。
+    let _serial = state.reload_guard().await;
+    if !netinfo_changes(state, node_id, &n) {
+        tracing::debug!(node_id, "NetInfo 无变化，跳过");
+        return;
+    }
     let db = state.db.clone();
     let saved = n.clone();
     match tokio::task::spawn_blocking(move || db.set_netinfo(node_id, &saved)).await {
@@ -383,6 +389,18 @@ async fn handle_netinfo(state: &AppState, node_id: i64, n: NetInfo) {
         Ok(Err(e)) => tracing::warn!(node_id, error = %e, "保存 NetInfo 失败"),
         Err(e) => tracing::warn!(node_id, error = %e, "保存 NetInfo 任务失败"),
     }
+}
+
+/// 是否有字段会改变缓存中的节点（`None` 字段不覆盖，不算变化）；节点不在缓存时视为有变化。
+fn netinfo_changes(state: &AppState, node_id: i64, n: &NetInfo) -> bool {
+    let nodes = state.nodes();
+    let Some(node) = nodes.iter().find(|x| x.id == node_id) else {
+        return true;
+    };
+    let differs = |new: &Option<String>, old: &Option<String>| new.is_some() && new != old;
+    differs(&n.ipv4, &node.ipv4)
+        || differs(&n.ipv6, &node.ipv6)
+        || differs(&n.country, &node.country)
 }
 
 /// 处理探测结果帧：仅当 `conn_id` 仍是该节点的当前会话时才接受

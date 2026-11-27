@@ -1,5 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
-use minimon_common::protocol::{AgentMsg, ErrorCode, Hello, PROTOCOL_VERSION, Report, ServerMsg};
+use minimon_common::protocol::{
+    AgentMsg, ErrorCode, Hello, NetInfo, PROTOCOL_VERSION, Report, ServerMsg,
+};
 use minimon_server::config::ServerConfig;
 use minimon_server::db::Db;
 use minimon_server::state::{AppState, LiveEvent};
@@ -370,5 +372,33 @@ async fn v1_agent_still_accepted() {
     assert!(matches!(
         recv(&mut ws).await,
         Some(ServerMsg::Welcome { .. })
+    ));
+}
+
+/// 公网地址没变时不写库、不触发 live 重同步（agent 每 6 小时、每次重连都会上报一次）。
+#[tokio::test]
+async fn unchanged_netinfo_does_not_resync() {
+    let fx = start().await;
+    let mut live = fx.state.live().subscribe();
+    let mut ws = connect(fx.port, &fx.token).await;
+    send(&mut ws, &AgentMsg::Hello(hello(PROTOCOL_VERSION))).await;
+    recv(&mut ws).await;
+    assert!(matches!(
+        next_event(&mut live).await,
+        LiveEvent::Online { .. }
+    ));
+    let n = NetInfo {
+        ipv4: Some("203.0.113.5".into()),
+        ipv6: None,
+        country: Some("JP".into()),
+    };
+    send(&mut ws, &AgentMsg::NetInfo(n.clone())).await;
+    assert!(matches!(next_event(&mut live).await, LiveEvent::Resync));
+    // 同样的内容再报一次，随后发一条上报：下一个事件应是 Report，而不是 Resync。
+    send(&mut ws, &AgentMsg::NetInfo(n)).await;
+    send(&mut ws, &AgentMsg::Report(report())).await;
+    assert!(matches!(
+        next_event(&mut live).await,
+        LiveEvent::Report { .. }
     ));
 }
