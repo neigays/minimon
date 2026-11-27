@@ -243,6 +243,10 @@ start_pre() {
 	set -a
 	. /etc/minimon/agent.env
 	set +a
+	# 简单轮转：每次启动时日志超过 5 MB 就挪成 .1（只保留一份旧日志）
+	if [ -f /var/log/minimon-agent.log ] && [ "$(wc -c < /var/log/minimon-agent.log)" -gt 5242880 ]; then
+		mv -f /var/log/minimon-agent.log /var/log/minimon-agent.log.1
+	fi
 }
 EOF
 }
@@ -286,7 +290,7 @@ uninstall() {
             rc-service minimon-agent stop >/dev/null 2>&1 || true
             rc-update del minimon-agent >/dev/null 2>&1 || true
         fi
-        rm -f "$ROOT$UNIT_PATH" "$ROOT$INITD_PATH" "$ROOT$LINUX_LOG"
+        rm -f "$ROOT$UNIT_PATH" "$ROOT$INITD_PATH" "$ROOT$LINUX_LOG" "$ROOT$LINUX_LOG.1"
         if service_enabled && has_systemd; then
             systemctl daemon-reload || true
         fi
