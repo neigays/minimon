@@ -19,6 +19,8 @@ pub const V6_URLS: [&str; 2] = [
 pub const PERIOD: Duration = Duration::from_secs(6 * 3600);
 /// 一个地址都没查到时的重试间隔（不等 6 小时）。
 pub const RETRY: Duration = Duration::from_secs(5 * 60);
+/// 重连后复用上次结果的时限：超过才重新查询（动态 IP 断线重连后仍能较快更新）。
+pub const MIN_GAP: Duration = Duration::from_secs(10 * 60);
 const TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BODY: usize = 4096;
 

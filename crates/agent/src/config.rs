@@ -24,6 +24,8 @@ pub struct AgentConfig {
     pub netinfo_urls: Option<crate::netinfo::NetinfoUrls>,
     /// 一个地址都没查到时多久后重试（测试可调小）。
     pub netinfo_retry: Duration,
+    /// 重连时距上次成功查询不足这么久，直接重发上次结果，不再访问 Cloudflare（防止断线抖动时反复查询）。
+    pub netinfo_min_gap: Duration,
 }
 
 impl AgentConfig {
@@ -37,6 +39,7 @@ impl AgentConfig {
             backoff_max: Duration::from_secs(60),
             netinfo_urls: None,
             netinfo_retry: crate::netinfo::RETRY,
+            netinfo_min_gap: crate::netinfo::MIN_GAP,
         }
     }
 }
@@ -64,7 +67,7 @@ pub struct Cli {
     /// 节点 token
     #[arg(long, env = "MINIMON_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
-    /// TOML 配置文件（字段：server、token、interval、iface_include）
+    /// TOML 配置文件（字段：server、token、interval、iface_include、no_netinfo）
     #[arg(long)]
     pub config: Option<PathBuf>,
     /// 覆盖 server 下发的上报间隔（秒）
@@ -73,6 +76,9 @@ pub struct Cli {
     /// 只统计指定网卡（可重复、可逗号分隔）
     #[arg(long = "iface", value_delimiter = ',')]
     pub iface_include: Vec<String>,
+    /// 不查询公网 IP 与国家（默认会访问 Cloudflare /cdn-cgi/trace）
+    #[arg(long, env = "MINIMON_NO_NETINFO")]
+    pub no_netinfo: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -83,6 +89,8 @@ struct FileConfig {
     interval: Option<u32>,
     #[serde(default)]
     iface_include: Vec<String>,
+    #[serde(default)]
+    no_netinfo: bool,
 }
 
 impl Cli {
@@ -110,7 +118,8 @@ impl Cli {
         } else {
             self.iface_include
         };
-        cfg.netinfo_urls = Some(crate::netinfo::NetinfoUrls::defaults());
+        cfg.netinfo_urls =
+            (!(self.no_netinfo || file.no_netinfo)).then(crate::netinfo::NetinfoUrls::defaults);
         Ok(cfg)
     }
 }
@@ -126,6 +135,7 @@ mod tests {
             config,
             interval: None,
             iface_include: vec![],
+            no_netinfo: false,
         }
     }
 
@@ -157,5 +167,21 @@ mod tests {
         assert_eq!(c.interval_override, Some(5));
         assert_eq!(c.iface_include, vec!["eth0".to_string()]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn netinfo_on_by_default_and_can_be_disabled() {
+        let on = cli(Some("ws://x"), Some("t"), None).resolve().unwrap();
+        assert!(on.netinfo_urls.is_some());
+        let mut c = cli(Some("ws://x"), Some("t"), None);
+        c.no_netinfo = true;
+        assert!(c.resolve().unwrap().netinfo_urls.is_none());
+        let dir = std::env::temp_dir().join(format!("mm-noni-{}", std::process::id()));
+        std::fs::write(&dir, "no_netinfo = true\n").unwrap();
+        let f = cli(Some("ws://x"), Some("t"), Some(dir.clone()))
+            .resolve()
+            .unwrap();
+        std::fs::remove_file(&dir).ok();
+        assert!(f.netinfo_urls.is_none());
     }
 }

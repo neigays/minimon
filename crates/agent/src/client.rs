@@ -64,10 +64,21 @@ pub async fn run(cfg: AgentConfig, shutdown: impl Future<Output = ()>) -> anyhow
     let mut backoff = Backoff::new(cfg.backoff_base, cfg.backoff_max);
     // ICMP 可用性缓存与告警随进程存在，重连不重置（避免每次重连都重试并重复告警）。
     let icmp = Arc::new(IcmpState::new());
+    // 最近一次成功查到的公网信息（随进程存在，重连时可复用）。
+    let mut net_cache: Option<(Instant, NetInfo)> = None;
     tokio::pin!(shutdown);
     info!(server = %cfg.server, "agent 启动");
     loop {
-        match session(&cfg, req.clone(), &mut collector, &icmp, &mut shutdown).await {
+        match session(
+            &cfg,
+            req.clone(),
+            &mut collector,
+            &icmp,
+            &mut net_cache,
+            &mut shutdown,
+        )
+        .await
+        {
             Outcome::Shutdown => {
                 info!("收到退出信号，agent 退出");
                 return Ok(());
@@ -127,6 +138,7 @@ async fn session<S>(
     req: Request<()>,
     collector: &mut Collector,
     icmp: &Arc<IcmpState>,
+    net_cache: &mut Option<(Instant, NetInfo)>,
     shutdown: &mut std::pin::Pin<&mut S>,
 ) -> Outcome
 where
@@ -143,7 +155,7 @@ where
     };
     debug!("WebSocket 已连接");
 
-    let outcome = drive(cfg, &mut ws, collector, icmp, shutdown).await;
+    let outcome = drive(cfg, &mut ws, collector, icmp, net_cache, shutdown).await;
     if matches!(outcome, Outcome::Shutdown) {
         let _ = timeout(CLOSE_TIMEOUT, ws.close(None)).await;
     }
@@ -155,6 +167,7 @@ async fn drive<S, W>(
     ws: &mut W,
     collector: &mut Collector,
     icmp: &Arc<IcmpState>,
+    net_cache: &mut Option<(Instant, NetInfo)>,
     shutdown: &mut std::pin::Pin<&mut S>,
 ) -> Outcome
 where
@@ -221,6 +234,22 @@ where
     let mut net_tick = interval(crate::netinfo::PERIOD);
     net_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut net_jobs: JoinSet<NetInfo> = JoinSet::new();
+    // 刚查过（断线抖动重连）：重发上次结果，到 MIN_GAP 再查。
+    if let Some((at, info)) = net_cache
+        .clone()
+        .filter(|(at, _)| at.elapsed() < cfg.netinfo_min_gap)
+    {
+        net_tick.reset_at(at + cfg.netinfo_min_gap);
+        let msg = match serde_json::to_string(&AgentMsg::NetInfo(info)) {
+            Ok(s) => s,
+            Err(e) => return lost(healthy, format!("序列化 net_info 失败: {e}")),
+        };
+        match send_frame(ws, Message::text(msg), shutdown).await {
+            Ok(()) => {}
+            Err(SendErr::Shutdown) => return Outcome::Shutdown,
+            Err(SendErr::Failed(e)) => return lost(healthy, format!("发送公网信息失败: {e}")),
+        }
+    }
 
     loop {
         tokio::select! {
@@ -260,6 +289,7 @@ where
                     net_tick.reset_after(retry);
                     continue;
                 }
+                *net_cache = Some((Instant::now(), info.clone()));
                 let msg = match serde_json::to_string(&AgentMsg::NetInfo(info)) {
                     Ok(s) => s,
                     Err(e) => return lost(healthy, format!("序列化 net_info 失败: {e}")),

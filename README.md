@@ -70,6 +70,8 @@ curl -fsSL https://<面板地址>/install.sh | sudo bash -s -- --server wss://<�
 
 ICMP 探测需要非特权 ping（`net.ipv4.ping_group_range` 覆盖 agent 的 gid）或 `CAP_NET_RAW`（systemd unit 已授予；OpenRC 下 agent 以 root 运行）；都没有时显示「ICMP 不可用」，TCP / HTTP 探测不受影响。
 
+agent 会访问 Cloudflare 的 `/cdn-cgi/trace` 获取公网 IP 和国家（先试 `1.1.1.1`，不通再试 `www.cloudflare.com`）。不想让它访问外网时，在 `/etc/minimon/agent.env` 里加 `MINIMON_NO_NETINFO=true` 后重启服务。
+
 ### 3. 配置告警
 
 后台 → 告警 → 通知，填入 Server酱³ 的 SendKey，点「发送测试」确认能收到。离线、流量、到期告警默认开启，自定义阈值规则在同一页添加。
