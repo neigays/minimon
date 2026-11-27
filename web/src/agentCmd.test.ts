@@ -28,3 +28,9 @@ test('install command with mirror', () => {
   )
   expect(installCommand('https://p', 'wss://p', 't', '  ')).toBe(installCommand('https://p', 'wss://p', 't'))
 })
+test('mirror with shell metacharacters is single-quoted', () => {
+  expect(installCommand('https://p', 'wss://p', 't', 'https://x/?a=1&b=2')).toBe(
+    "curl -fsSL https://p/install.sh | sudo bash -s -- --server wss://p --token t --mirror 'https://x/?a=1&b=2'",
+  )
+  expect(installCommand('https://p', 'wss://p', 't', "https://x/it's")).toContain(`--mirror 'https://x/it'\\''s'`)
+})

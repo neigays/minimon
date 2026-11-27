@@ -19,8 +19,13 @@ export function httpBase(publicUrl: string | null, location: { protocol: string;
   return `${location.protocol}//${location.host}`
 }
 
-/** 一键安装命令：从面板下载 install.sh 并以 root 执行。 */
+/** shell 参数：只含安全字符时原样输出，否则用单引号包起来（内部 `'` 写成 `'\''`）。 */
+function shellArg(s: string): string {
+  return /^[A-Za-z0-9._~:/%+@=,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+/** 一键安装命令：从面板下载 install.sh 并以 root 执行。镜像前缀是用户输入，按 shell 规则加引号。 */
 export function installCommand(httpBase: string, wsBase: string, token: string, mirror?: string): string {
   const m = mirror?.trim()
-  return `curl -fsSL ${httpBase}/install.sh | sudo bash -s -- --server ${wsBase} --token ${token}${m ? ` --mirror ${m}` : ''}`
+  return `curl -fsSL ${httpBase}/install.sh | sudo bash -s -- --server ${wsBase} --token ${token}${m ? ` --mirror ${shellArg(m)}` : ''}`
 }
