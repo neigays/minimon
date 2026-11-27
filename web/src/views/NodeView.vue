@@ -10,7 +10,6 @@ import { buildProbeCharts, fetchProbeHistory, type ProbeHistory } from '../probe
 import TagList from '../components/TagList.vue'
 import Flag from '../components/Flag.vue'
 
-
 const route = useRoute()
 const { nodes, connected, loaded } = useLive()
 
@@ -113,7 +112,6 @@ const status = computed(() => (node.value ? statusOf(node.value, connected.value
         <TagList v-if="node.tags?.length" :tags="node.tags" />
       </div>
       <p v-else-if="!loaded" class="muted">加载中…</p>
-
 
       <div class="toolbar">
         <div class="seg" role="group" aria-label="时间范围">

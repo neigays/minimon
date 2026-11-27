@@ -26,3 +26,8 @@ main { padding-block: 20px 48px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* 后台页标题行与区块小标题（各后台页共用） */
+.panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.panel-head h2 { font-size: 18px; font-weight: 650; margin: 0; }
+.sec-title { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; margin: 24px 0 8px; }

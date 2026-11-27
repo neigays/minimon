@@ -135,10 +135,8 @@ async function submitPw() {
 </template>
 
 <style scoped>
-.panel-head { margin-bottom: 12px; }
-.panel-head h2 { font-size: 18px; font-weight: 650; margin: 0; }
 .card { background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); padding: 16px; margin-bottom: 16px; display: grid; gap: 12px; }
-.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; align-items: start; }
 .cols .card { margin-bottom: 0; }
 .row { display: flex; gap: 16px; align-items: center; }
 .grow { flex: 1; min-width: 0; }

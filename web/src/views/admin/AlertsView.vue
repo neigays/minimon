@@ -171,7 +171,7 @@ async function sendTest() {
     <div class="panel-head"><h2>告警</h2></div>
     <div v-if="pageErr" class="err page-err" role="alert">{{ pageErr }}</div>
 
-    <h3>当前告警</h3>
+    <h3 class="sec-title">当前告警</h3>
     <div class="box">
       <p v-if="loaded && active.length === 0" class="ok-line">一切正常</p>
       <ul v-else class="active">
@@ -185,7 +185,7 @@ async function sendTest() {
       </ul>
     </div>
 
-    <h3>规则</h3>
+    <h3 class="sec-title">规则</h3>
     <div class="box builtin">
       <div v-for="b in BUILTIN" :key="b.key" class="b-row">
         <button type="button" class="switch" role="switch" :aria-checked="settings?.[b.key] ?? false" :aria-label="`启用${b.label}告警`" :disabled="busy || !settings" @click="toggleFlag(b.key)"></button>
@@ -223,7 +223,7 @@ async function sendTest() {
       </table>
     </div>
 
-    <h3>通知</h3>
+    <h3 class="sec-title">通知</h3>
     <div class="box notify">
       <form class="key" novalidate @submit.prevent="saveKey(false)">
         <div class="field">
@@ -251,7 +251,7 @@ async function sendTest() {
       <div v-if="tagsMsg" class="ok" role="status">{{ tagsMsg }}</div>
     </div>
 
-    <h3>告警历史</h3>
+    <h3 class="sec-title">告警历史</h3>
     <AlertHistory ref="history" :tz="tz" />
 
     <AlertRuleDialog ref="dlg" :nodes="sortedNodes" :tasks="tasks" @saved="onSaved" />
@@ -259,11 +259,8 @@ async function sendTest() {
 </template>
 
 <style scoped>
-.panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-.panel-head h2 { font-size: 18px; font-weight: 650; margin: 0; }
 .panel-head.sub { margin: 14px 0 8px; }
 .panel-head h4 { margin: 0; font-size: 13px; color: var(--fg-2); }
-h3 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; margin: 24px 0 8px; }
 .spacer { flex: 1; }
 .small { font-size: 12px; }
 .page-err { margin-bottom: 10px; }

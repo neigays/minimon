@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, ApiError } from '../../api'
 import { agentCommand, httpBase, installCommand, wsBase } from '../../agentCmd'
 import ConfirmButton from '../../components/ConfirmButton.vue'
@@ -156,6 +156,10 @@ async function openInstall(n: AdminNode, title: string, token?: string) {
     if (inst.value?.node.id === n.id) Object.assign(inst.value, { loading: false, err: e instanceof ApiError ? e.message : '读取失败，请重试' })
   }
 }
+// 节点被删除（本页或其它标签页）后，关掉它的安装命令面板。
+watch(list, (l) => {
+  if (inst.value && !l.some((n) => n.id === inst.value?.node.id)) inst.value = null
+})
 function copy() {
   const c = instCmd.value?.command
   if (!c) return
@@ -377,8 +381,6 @@ td.ip .v6 { font-size: 11px; color: var(--muted); }
 .mirror { flex: 1; min-width: 220px; }
 .tag-help { margin-top: 6px; font-size: 12px; min-height: 18px; }
 .err-hint { margin-top: 4px; color: var(--bad); }
-.panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-.panel-head h2 { font-size: 18px; font-weight: 650; margin: 0; }
 .spacer { flex: 1; }
 .page-err { margin-bottom: 10px; }
 .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: var(--r); }

@@ -240,8 +240,6 @@ const sortedNodes = computed(() => [...nodes.value].sort((a, b) => a.sort - b.so
 </template>
 
 <style scoped>
-.panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-.panel-head h2 { font-size: 18px; font-weight: 650; margin: 0; }
 .spacer { flex: 1; }
 .small { font-size: 12px; }
 .page-err { margin-bottom: 10px; }

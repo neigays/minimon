@@ -57,8 +57,7 @@ const offlineText = computed(() => {
         <span v-if="days !== null" class="exp" :class="expireLevel(days)">{{ expireText(days) }}</span>
       </div>
       <div v-if="off" class="foot">
-        <span>{{ offlineText }}</span>
-        <span>以上为{{ connected ? '离线' : '断线' }}前最后数据</span>
+        <span class="one">{{ offlineText }} · 显示{{ connected ? '离线' : '断线' }}前数据</span>
       </div>
       <div v-else class="foot">
         <span>↓ <b class="num">{{ formatRate(r.net_rx_rate) }}</b></span>
@@ -87,7 +86,9 @@ const offlineText = computed(() => {
 .never { font-size: 12px; color: var(--muted); }
 .foot { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 9px; }
 .foot b { color: var(--fg-2); font-weight: 500; }
+.foot .one { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .adm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; color: var(--muted); }
+.adm .tl, .exp { white-space: nowrap; }
 .adm .tl b { color: var(--fg-2); font-weight: 500; }
 .tbar { flex: 1; min-width: 48px; height: 6px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
 .tbar i { display: block; height: 100%; background: var(--ok); border-radius: 3px; }
