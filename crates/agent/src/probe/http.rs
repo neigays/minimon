@@ -220,10 +220,10 @@ where
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
     loop {
-        // TLS 对端不发 close_notify 直接断开时 read 报错：已读到的内容照样可用
+        // TLS 对端不发 close_notify 直接断开时 read 报错：已读到的内容在完整时照样可用
         let n = match s.read(&mut chunk).await {
             Ok(n) => n,
-            Err(_) if !buf.is_empty() => 0,
+            Err(_) if cut_is_complete(&buf) && !buf.is_empty() => 0,
             Err(_) => return None,
         };
         if n == 0 {
@@ -236,6 +236,22 @@ where
         }
     }
     Some(buf)
+}
+
+/// 连接中途出错时，已读内容能否当作完整响应：头部须完整；有 Content-Length 时正文须达到该长度。
+fn cut_is_complete(buf: &[u8]) -> bool {
+    let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return false;
+    };
+    let head = String::from_utf8_lossy(&buf[..end]);
+    let len = head.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim()
+            .eq_ignore_ascii_case("content-length")
+            .then(|| v.trim().parse::<usize>().ok())
+            .flatten()
+    });
+    len.is_none_or(|n| buf.len() - (end + 4) >= n)
 }
 
 /// GET `url`；2xx/3xx 成功，其它状态计丢失。`limit` 为每个样本的总超时。
@@ -319,5 +335,20 @@ mod tests {
         ] {
             assert!(parse_url(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn cut_response_needs_full_content_length() {
+        let full = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+        assert!(cut_is_complete(full));
+        assert!(!cut_is_complete(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhel"
+        ));
+        assert!(!cut_is_complete(b"HTTP/1.1 200 OK\r\nContent-Le"));
+        // 没有 Content-Length：无法判断，沿用旧行为（对端不发 close_notify 很常见）
+        assert!(cut_is_complete(b"HTTP/1.1 200 OK\r\n\r\nip=1.2.3.4\n"));
+        assert!(cut_is_complete(
+            b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"
+        ));
     }
 }
